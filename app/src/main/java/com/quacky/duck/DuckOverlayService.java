@@ -25,8 +25,11 @@ public class DuckOverlayService extends Service {
     private static final String CLAUDE_MODEL = "claude-sonnet-4-20250514";
     private static final String API_KEY      = "TU_API_KEY_AQUI";
 
-    private static final int   DUCK_SIZE_DP  = 110;
-    private static final float SPEED         = 0.10f;
+    // PATO MÁS PEQUEÑO: 65dp en lugar de 110dp
+    private static final int   DUCK_SIZE_DP  = 65;
+
+    // Velocidad lenta y natural de pato
+    private static final float SPEED         = 0.035f;
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private WindowManager  wm;
@@ -61,7 +64,7 @@ public class DuckOverlayService extends Service {
     }
     private final List<Footprint> footprints = new ArrayList<>();
     private View footprintOverlay;
-    private static final long FOOTPRINT_LIFE = 1800; // ms
+    private static final long FOOTPRINT_LIFE = 1800;
 
     // ── Sonidos ───────────────────────────────────────────────────────────────
     private MediaPlayer quackPlayer;
@@ -75,14 +78,13 @@ public class DuckOverlayService extends Service {
     // ── Historial conversación ────────────────────────────────────────────────
     private final List<JSONObject> chatHistory = new ArrayList<>();
 
-    // ── Wander autónomo ───────────────────────────────────────────────────────
-    private Handler wanderHandler = new Handler(Looper.getMainLooper());
-    private Runnable wanderRunnable;
-
     // ── Huella timing ─────────────────────────────────────────────────────────
     private long lastFootprintTime = 0;
     private boolean nextFootLeft   = true;
     private float  lastFootX = -999, lastFootY = -999;
+
+    // ── Overlay transparente para capturar toques en toda la pantalla ─────────
+    private View touchOverlay;
 
     @Override
     public void onCreate() {
@@ -92,15 +94,65 @@ public class DuckOverlayService extends Service {
         startForeground(1, buildNotification());
         setupFootprintOverlay();
         setupOverlay();
+        setupTouchOverlay();   // Capa que detecta toques en toda la pantalla
         setupSpeechRecognizer();
         startMoveLoop();
-        startWandering();
+        // SIN wander autónomo — el pato se queda quieto hasta que toques la pantalla
         startRandomQuacks();
-        mainHandler.postDelayed(() -> showBubble("¡Quack! ¡Hola! Soy Quacky 🐥\n¡Tócame para hablarme!", 5000), 1200);
+        mainHandler.postDelayed(() -> showBubble("¡Quack! ¡Hola! Soy Quacky 🐥\n¡Toca la pantalla para moverme!", 5000), 1200);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  FOOTPRINT OVERLAY (capa transparente debajo del pato)
+    //  CAPA TRANSPARENTE PARA DETECTAR TOQUES EN TODA LA PANTALLA
+    //  Está DETRÁS del pato — el pato sigue recibiendo sus propios toques
+    // ─────────────────────────────────────────────────────────────────────────
+    private void setupTouchOverlay() {
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+
+        int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            : WindowManager.LayoutParams.TYPE_PHONE;
+
+        touchOverlay = new View(this);
+        touchOverlay.setBackgroundColor(Color.TRANSPARENT);
+
+        WindowManager.LayoutParams touchParams = new WindowManager.LayoutParams(
+            dm.widthPixels,
+            dm.heightPixels,
+            overlayType,
+            // FLAG_NOT_FOCUSABLE para no bloquear el teclado ni nada más
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        );
+        touchParams.gravity = Gravity.TOP | Gravity.START;
+        touchParams.x = 0;
+        touchParams.y = 0;
+
+        touchOverlay.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                // Mover el pato hacia donde tocaste, de forma lenta y natural
+                float touchX = event.getRawX() - dp2px(DUCK_SIZE_DP) / 2f;
+                float touchY = event.getRawY() - dp2px(DUCK_SIZE_DP) / 2f;
+
+                // Limitar dentro de la pantalla
+                DisplayMetrics d = getResources().getDisplayMetrics();
+                touchX = Math.max(0, Math.min(touchX, d.widthPixels  - dp2px(DUCK_SIZE_DP)));
+                touchY = Math.max(0, Math.min(touchY, d.heightPixels - dp2px(DUCK_SIZE_DP)));
+
+                targetX = touchX;
+                targetY = touchY;
+            }
+            // Retornar false para que el toque pase también a las apps de abajo
+            return false;
+        });
+
+        // Agregar ANTES del rootView del pato (queda detrás)
+        wm.addView(touchOverlay, touchParams);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  FOOTPRINT OVERLAY
     // ─────────────────────────────────────────────────────────────────────────
     private void setupFootprintOverlay() {
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
@@ -125,7 +177,7 @@ public class DuckOverlayService extends Service {
                         if (age >= 1f) { it.remove(); continue; }
                         int alpha = (int)(180 * (1f - age));
                         fp.setColor(Color.argb(alpha, 180, 80, 0));
-                        float scale = dm.density * 6f;
+                        float scale = dm.density * 5f; // Huellas un poco más pequeñas también
                         canvas.save();
                         canvas.translate(f.x, f.y);
                         canvas.rotate(f.isLeft ? -15f : 15f);
@@ -174,10 +226,11 @@ public class DuckOverlayService extends Service {
         int screenH = dm.heightPixels;
         int duckPx  = dp2px(DUCK_SIZE_DP);
 
+        // Posición inicial: centro-bajo de la pantalla
         currentX = screenW / 2f - duckPx / 2f;
-        currentY = screenH * 0.6f;
-        targetX = currentX;
-        targetY = currentY;
+        currentY = screenH * 0.72f;
+        targetX  = currentX;
+        targetY  = currentY;
 
         int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -196,42 +249,24 @@ public class DuckOverlayService extends Service {
         params.y = (int) currentY;
         wm.addView(rootView, params);
 
-        // ── Touch: tap = mic, drag = mover ────────────────────────────────────
+        // ── Touch en el PATO: tap = micrófono ────────────────────────────────
         duckView.setOnTouchListener(new View.OnTouchListener() {
-            float startRawX, startRawY;
-            boolean dragging = false;
             long touchStart;
 
             @Override
             public boolean onTouch(View v, MotionEvent e) {
                 switch (e.getAction()) {
                     case MotionEvent.ACTION_DOWN:
-                        startRawX = e.getRawX();
-                        startRawY = e.getRawY();
-                        dragging  = false;
                         touchStart = System.currentTimeMillis();
-                        stopWandering();
                         break;
-
-                    case MotionEvent.ACTION_MOVE:
-                        float dx = e.getRawX() - startRawX;
-                        float dy = e.getRawY() - startRawY;
-                        if (!dragging && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) dragging = true;
-                        if (dragging) {
-                            targetX = e.getRawX() - dp2px(DUCK_SIZE_DP) / 2f;
-                            targetY = e.getRawY() - dp2px(DUCK_SIZE_DP) / 2f;
-                        }
-                        break;
-
                     case MotionEvent.ACTION_UP:
                         long elapsed = System.currentTimeMillis() - touchStart;
-                        if (!dragging && elapsed < 400) {
-                            startListening(); // TAP = abrir mic
-                        } else {
-                            startWandering();
+                        if (elapsed < 400) {
+                            startListening(); // TAP = abrir micrófono
                         }
                         break;
                 }
+                // Consumir el evento para que no llegue al touchOverlay
                 return true;
             }
         });
@@ -248,7 +283,7 @@ public class DuckOverlayService extends Service {
             @Override public void run() {
                 boolean moving = isMoving();
                 if (moving) {
-                    walkPhase += 0.05f;
+                    walkPhase += 0.04f; // Un poco más lento que antes (era 0.05)
                     if (walkPhase > 1f) walkPhase = 0f;
                 }
                 duckView.setWalkState(moving, walkPhase, facingRight ? 1f : -1f);
@@ -263,18 +298,23 @@ public class DuckOverlayService extends Service {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  LOOP DE MOVIMIENTO + HUELLAS
+    //  LOOP DE MOVIMIENTO LENTO Y NATURAL + HUELLAS
+    //  Usa interpolación ease-out: empieza rápido, frena suavemente al llegar
     // ─────────────────────────────────────────────────────────────────────────
     private void startMoveLoop() {
         moveRunnable = new Runnable() {
             @Override public void run() {
-                float dx = targetX - currentX;
-                float dy = targetY - currentY;
+                float dx   = targetX - currentX;
+                float dy   = targetY - currentY;
                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
 
                 if (dist > 2f) {
-                    currentX += dx * SPEED;
-                    currentY += dy * SPEED;
+                    // Velocidad proporcional a la distancia (ease-out natural)
+                    // Mínimo 0.018 para que no se pegue, máximo SPEED
+                    float speed = Math.min(SPEED, Math.max(0.018f, dist / 800f));
+
+                    currentX += dx * speed;
+                    currentY += dy * speed;
 
                     boolean shouldFaceRight = dx > 0;
                     if (shouldFaceRight != facingRight) {
@@ -285,20 +325,19 @@ public class DuckOverlayService extends Service {
                     params.y = (int) currentY;
                     try { wm.updateViewLayout(rootView, params); } catch (Exception ignored) {}
 
-                    // Registrar huella cada ~60px recorridos
+                    // Registrar huella cada ~50px recorridos
                     float movedX = currentX - lastFootX;
                     float movedY = currentY - lastFootY;
-                    float moved  = (float) Math.sqrt(movedX*movedX + movedY*movedY);
+                    float moved  = (float) Math.sqrt(movedX * movedX + movedY * movedY);
                     long  now    = System.currentTimeMillis();
-                    if (moved > dp2px(28) && (now - lastFootprintTime) > 300) {
+                    if (moved > dp2px(24) && (now - lastFootprintTime) > 350) {
                         lastFootprintTime = now;
                         lastFootX = currentX;
                         lastFootY = currentY;
                         int duckPx = dp2px(DUCK_SIZE_DP);
-                        // Offset pata izq/der
-                        float offsetX = (nextFootLeft ? -dp2px(8) : dp2px(8));
-                        float fpX = currentX + duckPx/2f + offsetX;
-                        float fpY = currentY + duckPx - dp2px(8);
+                        float offsetX = (nextFootLeft ? -dp2px(6) : dp2px(6));
+                        float fpX = currentX + duckPx / 2f + offsetX;
+                        float fpY = currentY + duckPx - dp2px(6);
                         synchronized (footprints) {
                             footprints.add(new Footprint(fpX, fpY, now, nextFootLeft));
                         }
@@ -321,7 +360,6 @@ public class DuckOverlayService extends Service {
                 if (!isListening && !isTalking) {
                     playQuack();
                 }
-                // Siguiente cuak entre 15 y 45 segundos
                 quackHandler.postDelayed(this, 15000 + rng.nextInt(30000));
             }
         };
@@ -330,40 +368,14 @@ public class DuckOverlayService extends Service {
 
     private void playQuack() {
         try {
-            // Síntesis de tono de pato con ToneGenerator
             ToneGenerator tg = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80);
             tg.startTone(ToneGenerator.TONE_PROP_BEEP2, 180);
             mainHandler.postDelayed(tg::release, 400);
-            // Mostrar texto cuak brevemente
             String[] quacks = {"¡Cuak!", "¡Quack!", "¡Cuaaak!", "🦆 Quack quack!", "¡Cuak cuak!"};
             showBubble(quacks[rng.nextInt(quacks.length)], 1800);
-            // Animación rebote rápido
-            duckView.animate().translationY(-12f).setDuration(120)
+            duckView.animate().translationY(-10f).setDuration(120)
                 .withEndAction(() -> duckView.animate().translationY(0).setDuration(120).start()).start();
         } catch (Exception ignored) {}
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    //  WANDER AUTÓNOMO
-    // ─────────────────────────────────────────────────────────────────────────
-    private void startWandering() {
-        stopWandering();
-        wanderRunnable = new Runnable() {
-            @Override public void run() {
-                if (!isListening && !isTalking) {
-                    DisplayMetrics dm = getResources().getDisplayMetrics();
-                    int margin = dp2px(20);
-                    targetX = margin + rng.nextInt(Math.max(1, dm.widthPixels - dp2px(DUCK_SIZE_DP) - margin * 2));
-                    targetY = dm.heightPixels / 3 + rng.nextInt(Math.max(1, dm.heightPixels / 2));
-                }
-                wanderHandler.postDelayed(this, 3000 + rng.nextInt(4000));
-            }
-        };
-        wanderHandler.postDelayed(wanderRunnable, 2000);
-    }
-
-    private void stopWandering() {
-        if (wanderRunnable != null) wanderHandler.removeCallbacks(wanderRunnable);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -409,9 +421,7 @@ public class DuckOverlayService extends Service {
 
     private void startListening() {
         if (isTalking || isListening) return;
-        stopWandering();
-        // Animación de tap
-        duckView.animate().scaleX(facingRight ? 1.2f : -1.2f).scaleY(1.2f).setDuration(120)
+        duckView.animate().scaleX(facingRight ? 1.15f : -1.15f).scaleY(1.15f).setDuration(120)
             .withEndAction(() -> duckView.animate()
                 .scaleX(facingRight ? 1f : -1f).scaleY(1f).setDuration(120).start()).start();
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
@@ -485,14 +495,12 @@ public class DuckOverlayService extends Service {
                     isTalking = false;
                     int duration = Math.max(4000, reply.length() * 60);
                     showBubble("🦆 " + reply, duration);
-                    startWandering();
                 });
 
             } catch (Exception e) {
                 mainHandler.post(() -> {
                     isTalking = false;
                     showBubble("¡Quack! No pude conectarme 😵 ¿Tienes internet?", 4000);
-                    startWandering();
                 });
             }
         }).start();
@@ -523,7 +531,7 @@ public class DuckOverlayService extends Service {
     //  ANIMATIONS
     // ─────────────────────────────────────────────────────────────────────────
     private void animateBounce(View v) {
-        v.animate().translationY(-20f).setDuration(200)
+        v.animate().translationY(-16f).setDuration(200)
             .withEndAction(() -> v.animate().translationY(0).setDuration(200).start()).start();
     }
 
@@ -566,13 +574,13 @@ public class DuckOverlayService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
-        if (rootView != null) try { wm.removeView(rootView); } catch (Exception ignored) {}
+        if (rootView != null)         try { wm.removeView(rootView); }         catch (Exception ignored) {}
         if (footprintOverlay != null) try { wm.removeView(footprintOverlay); } catch (Exception ignored) {}
+        if (touchOverlay != null)     try { wm.removeView(touchOverlay); }     catch (Exception ignored) {}
         if (speechRecognizer != null) speechRecognizer.destroy();
-        if (quackPlayer != null) { quackPlayer.release(); quackPlayer = null; }
+        if (quackPlayer != null)      { quackPlayer.release(); quackPlayer = null; }
         mainHandler.removeCallbacks(moveRunnable);
         walkHandler.removeCallbacks(walkAnim);
         quackHandler.removeCallbacks(quackRunnable);
-        stopWandering();
     }
 }
