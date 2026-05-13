@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ic_launcher.xml - placeholder, reemplazar con duck.png en Android Studio -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/duck_yellow"/>
+    <foreground android:drawable="@drawable/duck"/>
+</adaptive-icon>
