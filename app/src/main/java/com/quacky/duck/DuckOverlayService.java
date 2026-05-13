@@ -25,11 +25,11 @@ public class DuckOverlayService extends Service {
     private static final String CLAUDE_MODEL = "claude-sonnet-4-20250514";
     private static final String API_KEY      = "TU_API_KEY_AQUI";
 
-    // PATO MÁS PEQUEÑO: 65dp en lugar de 110dp
-    private static final int   DUCK_SIZE_DP  = 65;
+    // Pato pequeño: 55dp
+    private static final int   DUCK_SIZE_DP  = 55;
 
-    // Velocidad lenta y natural de pato
-    private static final float SPEED         = 0.035f;
+    // Velocidad muy lenta y natural
+    private static final float SPEED_BASE    = 0.022f;
 
     // ── Views ─────────────────────────────────────────────────────────────────
     private WindowManager  wm;
@@ -37,6 +37,10 @@ public class DuckOverlayService extends Service {
     private DuckView       duckView;
     private TextView       bubbleText;
     private View           bubbleCard;
+
+    // Vista invisible que captura toques en toda la pantalla SIN bloquear apps
+    private View           touchCatcher;
+    private WindowManager.LayoutParams touchCatcherParams;
 
     // ── Estado ────────────────────────────────────────────────────────────────
     private WindowManager.LayoutParams params;
@@ -67,7 +71,6 @@ public class DuckOverlayService extends Service {
     private static final long FOOTPRINT_LIFE = 1800;
 
     // ── Sonidos ───────────────────────────────────────────────────────────────
-    private MediaPlayer quackPlayer;
     private Handler quackHandler = new Handler(Looper.getMainLooper());
     private Runnable quackRunnable;
     private final Random rng = new Random();
@@ -83,79 +86,81 @@ public class DuckOverlayService extends Service {
     private boolean nextFootLeft   = true;
     private float  lastFootX = -999, lastFootY = -999;
 
-    // ── Overlay transparente para capturar toques en toda la pantalla ─────────
-    private View touchOverlay;
+    // ── Bubble handler ────────────────────────────────────────────────────────
+    private Handler bubbleHandler = new Handler(Looper.getMainLooper());
+    private Runnable bubbleHider;
 
+    // ─────────────────────────────────────────────────────────────────────────
     @Override
     public void onCreate() {
         super.onCreate();
         mainHandler = new Handler(Looper.getMainLooper());
         createNotificationChannel();
         startForeground(1, buildNotification());
+        wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         setupFootprintOverlay();
-        setupOverlay();
-        setupTouchOverlay();   // Capa que detecta toques en toda la pantalla
+        setupTouchCatcher();   // 1) Catcher primero (queda detrás del pato)
+        setupOverlay();        // 2) Pato encima
         setupSpeechRecognizer();
         startMoveLoop();
-        // SIN wander autónomo — el pato se queda quieto hasta que toques la pantalla
         startRandomQuacks();
-        mainHandler.postDelayed(() -> showBubble("¡Quack! ¡Hola! Soy Quacky 🐥\n¡Toca la pantalla para moverme!", 5000), 1200);
+        mainHandler.postDelayed(
+            () -> showBubble("¡Quack! ¡Hola! Soy Quacky 🐥\n¡Toca la pantalla para moverme!", 5000),
+            1200);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  CAPA TRANSPARENTE PARA DETECTAR TOQUES EN TODA LA PANTALLA
-    //  Está DETRÁS del pato — el pato sigue recibiendo sus propios toques
+    //  TOUCH CATCHER
+    //
+    //  Técnica: vista de 1x1 px con FLAG_WATCH_OUTSIDE_TOUCH +
+    //  FLAG_NOT_TOUCH_MODAL. Recibe una copia de cada toque en la pantalla
+    //  como ACTION_OUTSIDE SIN consumirlo, así las apps siguen funcionando.
     // ─────────────────────────────────────────────────────────────────────────
-    private void setupTouchOverlay() {
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-
+    private void setupTouchCatcher() {
         int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             : WindowManager.LayoutParams.TYPE_PHONE;
 
-        touchOverlay = new View(this);
-        touchOverlay.setBackgroundColor(Color.TRANSPARENT);
+        touchCatcher = new View(this);
+        touchCatcher.setBackgroundColor(Color.TRANSPARENT);
 
-        WindowManager.LayoutParams touchParams = new WindowManager.LayoutParams(
-            dm.widthPixels,
-            dm.heightPixels,
+        touchCatcherParams = new WindowManager.LayoutParams(
+            1, 1,
             overlayType,
-            // FLAG_NOT_FOCUSABLE para no bloquear el teclado ni nada más
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT
         );
-        touchParams.gravity = Gravity.TOP | Gravity.START;
-        touchParams.x = 0;
-        touchParams.y = 0;
+        touchCatcherParams.gravity = Gravity.TOP | Gravity.START;
+        touchCatcherParams.x = 0;
+        touchCatcherParams.y = 0;
 
-        touchOverlay.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                // Mover el pato hacia donde tocaste, de forma lenta y natural
-                float touchX = event.getRawX() - dp2px(DUCK_SIZE_DP) / 2f;
-                float touchY = event.getRawY() - dp2px(DUCK_SIZE_DP) / 2f;
+        touchCatcher.setOnTouchListener((v, event) -> {
+            // ACTION_OUTSIDE = toque fuera del pixel 0,0 (cualquier toque en pantalla)
+            if (event.getAction() == MotionEvent.ACTION_OUTSIDE
+                    || event.getAction() == MotionEvent.ACTION_DOWN) {
 
-                // Limitar dentro de la pantalla
                 DisplayMetrics d = getResources().getDisplayMetrics();
-                touchX = Math.max(0, Math.min(touchX, d.widthPixels  - dp2px(DUCK_SIZE_DP)));
-                touchY = Math.max(0, Math.min(touchY, d.heightPixels - dp2px(DUCK_SIZE_DP)));
-
-                targetX = touchX;
-                targetY = touchY;
+                int duckPx = dp2px(DUCK_SIZE_DP);
+                float nx = event.getRawX() - duckPx / 2f;
+                float ny = event.getRawY() - duckPx / 2f;
+                nx = Math.max(0, Math.min(nx, d.widthPixels  - duckPx));
+                ny = Math.max(0, Math.min(ny, d.heightPixels - duckPx));
+                targetX = nx;
+                targetY = ny;
             }
-            // Retornar false para que el toque pase también a las apps de abajo
+            // false = NO consumir el toque → pasa a la app debajo
             return false;
         });
 
-        // Agregar ANTES del rootView del pato (queda detrás)
-        wm.addView(touchOverlay, touchParams);
+        wm.addView(touchCatcher, touchCatcherParams);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     //  FOOTPRINT OVERLAY
     // ─────────────────────────────────────────────────────────────────────────
     private void setupFootprintOverlay() {
-        wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         DisplayMetrics dm = getResources().getDisplayMetrics();
 
         int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
@@ -164,7 +169,7 @@ public class DuckOverlayService extends Service {
 
         footprintOverlay = new View(this) {
             private final Paint fp = new Paint(Paint.ANTI_ALIAS_FLAG);
-            private final Path footPath = new Path();
+            private final Path  footPath = new Path();
 
             @Override protected void onDraw(Canvas canvas) {
                 long now = System.currentTimeMillis();
@@ -175,9 +180,9 @@ public class DuckOverlayService extends Service {
                         Footprint f = it.next();
                         float age = (now - f.born) / (float) FOOTPRINT_LIFE;
                         if (age >= 1f) { it.remove(); continue; }
-                        int alpha = (int)(180 * (1f - age));
+                        int alpha = (int)(160 * (1f - age));
                         fp.setColor(Color.argb(alpha, 180, 80, 0));
-                        float scale = dm.density * 5f; // Huellas un poco más pequeñas también
+                        float scale = dm.density * 4.5f;
                         canvas.save();
                         canvas.translate(f.x, f.y);
                         canvas.rotate(f.isLeft ? -15f : 15f);
@@ -226,7 +231,6 @@ public class DuckOverlayService extends Service {
         int screenH = dm.heightPixels;
         int duckPx  = dp2px(DUCK_SIZE_DP);
 
-        // Posición inicial: centro-bajo de la pantalla
         currentX = screenW / 2f - duckPx / 2f;
         currentY = screenH * 0.72f;
         targetX  = currentX;
@@ -249,24 +253,19 @@ public class DuckOverlayService extends Service {
         params.y = (int) currentY;
         wm.addView(rootView, params);
 
-        // ── Touch en el PATO: tap = micrófono ────────────────────────────────
+        // Tap directo en el pato = micrófono
         duckView.setOnTouchListener(new View.OnTouchListener() {
             long touchStart;
-
             @Override
             public boolean onTouch(View v, MotionEvent e) {
-                switch (e.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        touchStart = System.currentTimeMillis();
-                        break;
-                    case MotionEvent.ACTION_UP:
-                        long elapsed = System.currentTimeMillis() - touchStart;
-                        if (elapsed < 400) {
-                            startListening(); // TAP = abrir micrófono
-                        }
-                        break;
+                if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                    touchStart = System.currentTimeMillis();
                 }
-                // Consumir el evento para que no llegue al touchOverlay
+                if (e.getAction() == MotionEvent.ACTION_UP) {
+                    if (System.currentTimeMillis() - touchStart < 400) {
+                        startListening();
+                    }
+                }
                 return true;
             }
         });
@@ -283,7 +282,7 @@ public class DuckOverlayService extends Service {
             @Override public void run() {
                 boolean moving = isMoving();
                 if (moving) {
-                    walkPhase += 0.04f; // Un poco más lento que antes (era 0.05)
+                    walkPhase += 0.035f;
                     if (walkPhase > 1f) walkPhase = 0f;
                 }
                 duckView.setWalkState(moving, walkPhase, facingRight ? 1f : -1f);
@@ -294,12 +293,11 @@ public class DuckOverlayService extends Service {
     }
 
     private boolean isMoving() {
-        return Math.abs(targetX - currentX) > 4 || Math.abs(targetY - currentY) > 4;
+        return Math.abs(targetX - currentX) > 3 || Math.abs(targetY - currentY) > 3;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  LOOP DE MOVIMIENTO LENTO Y NATURAL + HUELLAS
-    //  Usa interpolación ease-out: empieza rápido, frena suavemente al llegar
+    //  LOOP DE MOVIMIENTO LENTO Y NATURAL (ease-out)
     // ─────────────────────────────────────────────────────────────────────────
     private void startMoveLoop() {
         moveRunnable = new Runnable() {
@@ -309,35 +307,31 @@ public class DuckOverlayService extends Service {
                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
 
                 if (dist > 2f) {
-                    // Velocidad proporcional a la distancia (ease-out natural)
-                    // Mínimo 0.018 para que no se pegue, máximo SPEED
-                    float speed = Math.min(SPEED, Math.max(0.018f, dist / 800f));
+                    // Velocidad proporcional a la distancia con techo bajo
+                    float speed = Math.min(SPEED_BASE, Math.max(0.012f, dist / 1200f));
 
                     currentX += dx * speed;
                     currentY += dy * speed;
 
-                    boolean shouldFaceRight = dx > 0;
-                    if (shouldFaceRight != facingRight) {
-                        facingRight = shouldFaceRight;
-                    }
+                    if (dx > 0 != facingRight) facingRight = dx > 0;
 
                     params.x = (int) currentX;
                     params.y = (int) currentY;
                     try { wm.updateViewLayout(rootView, params); } catch (Exception ignored) {}
 
-                    // Registrar huella cada ~50px recorridos
-                    float movedX = currentX - lastFootX;
-                    float movedY = currentY - lastFootY;
-                    float moved  = (float) Math.sqrt(movedX * movedX + movedY * movedY);
-                    long  now    = System.currentTimeMillis();
-                    if (moved > dp2px(24) && (now - lastFootprintTime) > 350) {
+                    // Huellas cada ~45px
+                    float mx = currentX - lastFootX;
+                    float my = currentY - lastFootY;
+                    float moved = (float) Math.sqrt(mx * mx + my * my);
+                    long now = System.currentTimeMillis();
+                    if (moved > dp2px(22) && (now - lastFootprintTime) > 380) {
                         lastFootprintTime = now;
                         lastFootX = currentX;
                         lastFootY = currentY;
                         int duckPx = dp2px(DUCK_SIZE_DP);
-                        float offsetX = (nextFootLeft ? -dp2px(6) : dp2px(6));
-                        float fpX = currentX + duckPx / 2f + offsetX;
-                        float fpY = currentY + duckPx - dp2px(6);
+                        float offX = nextFootLeft ? -dp2px(5) : dp2px(5);
+                        float fpX  = currentX + duckPx / 2f + offX;
+                        float fpY  = currentY + duckPx - dp2px(5);
                         synchronized (footprints) {
                             footprints.add(new Footprint(fpX, fpY, now, nextFootLeft));
                         }
@@ -357,9 +351,7 @@ public class DuckOverlayService extends Service {
     private void startRandomQuacks() {
         quackRunnable = new Runnable() {
             @Override public void run() {
-                if (!isListening && !isTalking) {
-                    playQuack();
-                }
+                if (!isListening && !isTalking) playQuack();
                 quackHandler.postDelayed(this, 15000 + rng.nextInt(30000));
             }
         };
@@ -373,8 +365,8 @@ public class DuckOverlayService extends Service {
             mainHandler.postDelayed(tg::release, 400);
             String[] quacks = {"¡Cuak!", "¡Quack!", "¡Cuaaak!", "🦆 Quack quack!", "¡Cuak cuak!"};
             showBubble(quacks[rng.nextInt(quacks.length)], 1800);
-            duckView.animate().translationY(-10f).setDuration(120)
-                .withEndAction(() -> duckView.animate().translationY(0).setDuration(120).start()).start();
+            duckView.animate().translationY(-10f).setDuration(130)
+                .withEndAction(() -> duckView.animate().translationY(0).setDuration(130).start()).start();
         } catch (Exception ignored) {}
     }
 
@@ -394,20 +386,19 @@ public class DuckOverlayService extends Service {
             @Override public void onResults(Bundle results) {
                 List<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
                 if (matches != null && !matches.isEmpty()) {
-                    String transcript = matches.get(0);
+                    String t = matches.get(0);
                     mainHandler.post(() -> {
                         isListening = false;
-                        showBubble("Tú: \"" + transcript + "\"", 2500);
-                        askClaude(transcript);
+                        showBubble("Tú: \"" + t + "\"", 2500);
+                        askClaude(t);
                     });
                 }
             }
             @Override public void onError(int error) {
                 mainHandler.post(() -> {
                     isListening = false;
-                    String msg = (error == SpeechRecognizer.ERROR_NO_MATCH)
-                        ? "No te escuché bien 🦆 ¡Inténtalo!" : "¡Quack! Error de micrófono 😬";
-                    showBubble(msg, 3000);
+                    showBubble(error == SpeechRecognizer.ERROR_NO_MATCH
+                        ? "No te escuché bien 🦆 ¡Inténtalo!" : "¡Quack! Error de micrófono 😬", 3000);
                 });
             }
             @Override public void onEndOfSpeech()       { isListening = false; }
@@ -439,10 +430,10 @@ public class DuckOverlayService extends Service {
         showBubble("💭 pensando...", 0);
         animateWiggle(duckView);
         try {
-            JSONObject userMsg = new JSONObject();
-            userMsg.put("role", "user");
-            userMsg.put("content", userMessage);
-            chatHistory.add(userMsg);
+            JSONObject um = new JSONObject();
+            um.put("role", "user");
+            um.put("content", userMessage);
+            chatHistory.add(um);
         } catch (JSONException e) { e.printStackTrace(); }
 
         new Thread(() -> {
@@ -474,29 +465,23 @@ public class DuckOverlayService extends Service {
                 try (OutputStream os = conn.getOutputStream()) {
                     os.write(body.toString().getBytes(StandardCharsets.UTF_8));
                 }
-
                 StringBuilder sb = new StringBuilder();
                 try (BufferedReader br = new BufferedReader(
                         new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
                     while ((line = br.readLine()) != null) sb.append(line);
                 }
-
-                JSONObject resp = new JSONObject(sb.toString());
-                String reply = resp.getJSONArray("content").getJSONObject(0).getString("text").trim();
-
-                JSONObject assistantMsg = new JSONObject();
-                assistantMsg.put("role", "assistant");
-                assistantMsg.put("content", reply);
-                chatHistory.add(assistantMsg);
+                JSONObject resp  = new JSONObject(sb.toString());
+                String     reply = resp.getJSONArray("content").getJSONObject(0).getString("text").trim();
+                JSONObject am = new JSONObject();
+                am.put("role", "assistant");
+                am.put("content", reply);
+                chatHistory.add(am);
                 while (chatHistory.size() > 20) chatHistory.remove(0);
-
                 mainHandler.post(() -> {
                     isTalking = false;
-                    int duration = Math.max(4000, reply.length() * 60);
-                    showBubble("🦆 " + reply, duration);
+                    showBubble("🦆 " + reply, Math.max(4000, reply.length() * 60));
                 });
-
             } catch (Exception e) {
                 mainHandler.post(() -> {
                     isTalking = false;
@@ -509,9 +494,6 @@ public class DuckOverlayService extends Service {
     // ─────────────────────────────────────────────────────────────────────────
     //  BUBBLE
     // ─────────────────────────────────────────────────────────────────────────
-    private Handler bubbleHandler = new Handler(Looper.getMainLooper());
-    private Runnable bubbleHider;
-
     private void showBubble(String text, int durationMs) {
         mainHandler.post(() -> {
             bubbleText.setText(text);
@@ -534,7 +516,6 @@ public class DuckOverlayService extends Service {
         v.animate().translationY(-16f).setDuration(200)
             .withEndAction(() -> v.animate().translationY(0).setDuration(200).start()).start();
     }
-
     private void animateWiggle(View v) {
         v.animate().rotation(10f).setDuration(100)
             .withEndAction(() -> v.animate().rotation(-10f).setDuration(100)
@@ -546,16 +527,15 @@ public class DuckOverlayService extends Service {
     // ─────────────────────────────────────────────────────────────────────────
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
+            NotificationChannel ch = new NotificationChannel(
                 CHANNEL_ID, "Quacky Pato IA", NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription("Mantiene a Quacky flotando sobre tus apps");
-            getSystemService(NotificationManager.class).createNotificationChannel(channel);
+            ch.setDescription("Mantiene a Quacky flotando sobre tus apps");
+            getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
     }
-
     private Notification buildNotification() {
-        Intent stopIntent = new Intent(this, MainActivity.class);
-        PendingIntent pi = PendingIntent.getActivity(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE);
+        Intent i = new Intent(this, MainActivity.class);
+        PendingIntent pi = PendingIntent.getActivity(this, 0, i, PendingIntent.FLAG_IMMUTABLE);
         return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("🐥 Quacky está vivo")
             .setContentText("Tócame · habla conmigo 🎤")
@@ -576,9 +556,8 @@ public class DuckOverlayService extends Service {
         super.onDestroy();
         if (rootView != null)         try { wm.removeView(rootView); }         catch (Exception ignored) {}
         if (footprintOverlay != null) try { wm.removeView(footprintOverlay); } catch (Exception ignored) {}
-        if (touchOverlay != null)     try { wm.removeView(touchOverlay); }     catch (Exception ignored) {}
+        if (touchCatcher != null)     try { wm.removeView(touchCatcher); }     catch (Exception ignored) {}
         if (speechRecognizer != null) speechRecognizer.destroy();
-        if (quackPlayer != null)      { quackPlayer.release(); quackPlayer = null; }
         mainHandler.removeCallbacks(moveRunnable);
         walkHandler.removeCallbacks(walkAnim);
         quackHandler.removeCallbacks(quackRunnable);
