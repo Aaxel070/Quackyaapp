@@ -1,12 +1,11 @@
 package com.quacky.duck;
-
+ 
 import android.app.*;
 import android.content.*;
 import android.graphics.*;
 import android.hardware.*;
 import android.media.*;
 import android.os.*;
-import android.speech.*;
 import android.view.*;
 import android.widget.*;
 import android.util.DisplayMetrics;
@@ -16,31 +15,31 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-
+ 
 public class DuckOverlayService extends Service implements SensorEventListener {
-
+ 
     // ── Constantes ────────────────────────────────────────────────────────────
     private static final String CHANNEL_ID   = "quacky_channel";
     private static final String CLAUDE_URL   = "https://api.anthropic.com/v1/messages";
     private static final String CLAUDE_MODEL = "claude-sonnet-4-20250514";
     private static final String API_KEY      = "TU_API_KEY_AQUI";
-
+ 
     // Pato muy pequeño: 28dp (mitad de 55)
     private static final int   DUCK_SIZE_DP = 28;
-
+ 
     // Velocidad muy lenta (mitad de 0.022 = 0.011)
     private static final float SPEED_BASE   = 0.011f;
-
+ 
     // Fuerza del giroscopio sobre el movimiento del pato
     private static final float GYRO_FORCE   = 18f;
-
+ 
     // ── Views ─────────────────────────────────────────────────────────────────
     private WindowManager  wm;
     private View           rootView;
     private DuckView       duckView;
     private TextView       bubbleText;
     private View           bubbleCard;
-
+ 
     // ── Estado ────────────────────────────────────────────────────────────────
     private WindowManager.LayoutParams params;
     private float  targetX, targetY;
@@ -50,12 +49,12 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private boolean facingRight = true;
     private Handler mainHandler;
     private Runnable moveRunnable;
-
+ 
     // ── Walk animation ────────────────────────────────────────────────────────
     private Handler  walkHandler = new Handler(Looper.getMainLooper());
     private float    walkPhase   = 0f;
     private Runnable walkAnim;
-
+ 
     // ── Huellas ───────────────────────────────────────────────────────────────
     private static class Footprint {
         float x, y; long born; boolean isLeft;
@@ -66,40 +65,38 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private final List<Footprint> footprints    = new ArrayList<>();
     private View                  footprintOverlay;
     private static final long     FOOTPRINT_LIFE = 1800;
-
+ 
     // ── Sonidos ───────────────────────────────────────────────────────────────
     private Handler  quackHandler  = new Handler(Looper.getMainLooper());
     private Runnable quackRunnable;
     private final Random rng = new Random();
-
-    // ── Speech ────────────────────────────────────────────────────────────────
-    private SpeechRecognizer speechRecognizer;
-
+ 
+    // ── Voice Result Receiver (reemplaza SpeechRecognizer directo) ────────────
+    private BroadcastReceiver voiceResultReceiver;
+ 
     // ── Historial conversación ────────────────────────────────────────────────
     private final List<JSONObject> chatHistory = new ArrayList<>();
-
+ 
     // ── Huella timing ─────────────────────────────────────────────────────────
     private long    lastFootprintTime = 0;
     private boolean nextFootLeft      = true;
     private float   lastFootX = -999, lastFootY = -999;
-
+ 
     // ── Bubble ────────────────────────────────────────────────────────────────
     private Handler  bubbleHandler = new Handler(Looper.getMainLooper());
     private Runnable bubbleHider;
-
+ 
     // ── Giroscopio ───────────────────────────────────────────────────────────
     private SensorManager sensorManager;
     private Sensor        gyroSensor;
-    // Velocidad acumulada por giroscopio (px/frame)
     private volatile float gyroVelX = 0f;
     private volatile float gyroVelY = 0f;
-    // Última vez que llegó un evento de giroscopio
     private long lastGyroTime = 0;
-
+ 
     // ── Touch overlay (pantalla completa, NO bloquea apps) ────────────────────
     private View                       touchOverlay;
     private WindowManager.LayoutParams touchOverlayParams;
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     @Override
     public void onCreate() {
@@ -108,47 +105,36 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         createNotificationChannel();
         startForeground(1, buildNotification());
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-
+ 
         setupFootprintOverlay();
-        setupTouchOverlay();   // capa táctil primero (abajo)
-        setupOverlay();        // pato encima
-        setupSpeechRecognizer();
+        setupTouchOverlay();
+        setupOverlay();
+        setupSpeechRecognizer();  // ahora registra el receptor de voz
         setupGyroscope();
         startMoveLoop();
         startRandomQuacks();
-
+ 
         mainHandler.postDelayed(
             () -> showBubble("¡Quack! 🐥 ¡Toca la pantalla o inclina el cel!", 5000),
             1200);
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
-    //  TOUCH OVERLAY — pantalla completa, SIN bloquear interacción
-    //
-    //  Técnica definitiva:
-    //  - Tamaño = pantalla completa
-    //  - FLAG_NOT_FOCUSABLE: no roba el foco del teclado
-    //  - FLAG_NOT_TOUCH_MODAL: los toques FUERA de la vista pasan a las apps
-    //  - Sin FLAG_NOT_TOUCHABLE: esta vista SÍ recibe toques (para mover el pato)
-    //  - setOnTouchListener retorna FALSE en todos los casos →
-    //    el sistema sigue enviando el toque a la app debajo también
+    //  TOUCH OVERLAY
     // ─────────────────────────────────────────────────────────────────────────
     private void setupTouchOverlay() {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             : WindowManager.LayoutParams.TYPE_PHONE;
-
+ 
         touchOverlay = new View(this);
         touchOverlay.setBackgroundColor(Color.TRANSPARENT);
-
+ 
         touchOverlayParams = new WindowManager.LayoutParams(
             dm.widthPixels,
             dm.heightPixels,
             overlayType,
-            // FLAG_NOT_FOCUSABLE: no roba foco
-            // FLAG_NOT_TOUCH_MODAL: toques fuera de la vista pasan a las apps
-            // SIN FLAG_NOT_TOUCHABLE: puede recibir eventos táctiles
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
@@ -156,9 +142,8 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         touchOverlayParams.gravity = Gravity.TOP | Gravity.START;
         touchOverlayParams.x = 0;
         touchOverlayParams.y = 0;
-        // Alpha = 0: completamente invisible, pero aún recibe toques
         touchOverlayParams.alpha = 0f;
-
+ 
         touchOverlay.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 DisplayMetrics d = getResources().getDisplayMetrics();
@@ -169,20 +154,17 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 ny = Math.max(0, Math.min(ny, d.heightPixels - duckPx));
                 targetX = nx;
                 targetY = ny;
-                // Apagar temporalmente el giroscopio para que el toque mande
                 gyroVelX = 0f;
                 gyroVelY = 0f;
             }
-            // IMPORTANTE: retornar false → el toque pasa también a la app debajo
             return false;
         });
-
+ 
         wm.addView(touchOverlay, touchOverlayParams);
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  GIROSCOPIO
-    //  Detecta la inclinación del teléfono y desplaza el target del pato
     // ─────────────────────────────────────────────────────────────────────────
     private void setupGyroscope() {
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
@@ -192,7 +174,6 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 sensorManager.registerListener(this, gyroSensor,
                     SensorManager.SENSOR_DELAY_GAME);
             } else {
-                // Fallback: usar acelerómetro si no hay giroscopio
                 Sensor accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
                 if (accel != null) {
                     sensorManager.registerListener(this, accel,
@@ -201,48 +182,39 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             }
         }
     }
-
+ 
     @Override
     public void onSensorChanged(SensorEvent event) {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         int duckPx = dp2px(DUCK_SIZE_DP);
-
+ 
         if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-            // values[0] = rotación X (cabeceo, arriba-abajo)
-            // values[1] = rotación Y (balanceo, izq-der)
-            float rotX = event.values[0]; // inclinar arriba/abajo → mover Y
-            float rotY = event.values[1]; // inclinar izq/der → mover X
-
-            // Filtrar ruido pequeño (dead zone de 0.05 rad/s)
+            float rotX = event.values[0];
+            float rotY = event.values[1];
+ 
             if (Math.abs(rotX) < 0.05f) rotX = 0f;
             if (Math.abs(rotY) < 0.05f) rotY = 0f;
-
-            // Acumular velocidad (el giroscopio da velocidad angular, lo
-            // convertimos en desplazamiento del target)
-            gyroVelX += rotY * GYRO_FORCE;   // inclinación lateral → X
-            gyroVelY += rotX * GYRO_FORCE;   // inclinación adelante → Y
-
-            // Aplicar a target con límites de pantalla
+ 
+            gyroVelX += rotY * GYRO_FORCE;
+            gyroVelY += rotX * GYRO_FORCE;
+ 
             float nx = targetX + gyroVelX;
             float ny = targetY + gyroVelY;
             nx = Math.max(0, Math.min(nx, dm.widthPixels  - duckPx));
             ny = Math.max(0, Math.min(ny, dm.heightPixels - duckPx));
             targetX = nx;
             targetY = ny;
-
-            // Amortiguación: la velocidad se frena sola
+ 
             gyroVelX *= 0.85f;
             gyroVelY *= 0.85f;
-
+ 
         } else if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            // Fallback para dispositivos sin giroscopio
-            // values[0] = X (inclinación lateral), values[1] = Y (inclinación frontal)
-            float ax = -event.values[0]; // invertir para que izquierda = izquierda
+            float ax = -event.values[0];
             float ay =  event.values[1];
-
+ 
             if (Math.abs(ax) < 0.3f) ax = 0f;
             if (Math.abs(ay) < 0.3f) ay = 0f;
-
+ 
             float nx = targetX + ax * 1.2f;
             float ny = targetY - ay * 1.2f;
             nx = Math.max(0, Math.min(nx, dm.widthPixels  - duckPx));
@@ -251,10 +223,10 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             targetY = ny;
         }
     }
-
+ 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {}
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  FOOTPRINT OVERLAY
     // ─────────────────────────────────────────────────────────────────────────
@@ -263,7 +235,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             : WindowManager.LayoutParams.TYPE_PHONE;
-
+ 
         footprintOverlay = new View(this) {
             private final Paint fp       = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Path  footPath = new Path();
@@ -298,7 +270,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             }
         };
         footprintOverlay.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-
+ 
         WindowManager.LayoutParams fpParams = new WindowManager.LayoutParams(
             dm.widthPixels, dm.heightPixels, overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -309,7 +281,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         fpParams.gravity = Gravity.TOP | Gravity.START;
         wm.addView(footprintOverlay, fpParams);
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  OVERLAY DEL PATO
     // ─────────────────────────────────────────────────────────────────────────
@@ -319,19 +291,19 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         duckView   = rootView.findViewById(R.id.duck_image);
         bubbleCard = rootView.findViewById(R.id.bubble_card);
         bubbleText = rootView.findViewById(R.id.bubble_text);
-
+ 
         DisplayMetrics dm = getResources().getDisplayMetrics();
         int duckPx = dp2px(DUCK_SIZE_DP);
-
+ 
         currentX = dm.widthPixels / 2f - duckPx / 2f;
         currentY = dm.heightPixels * 0.72f;
         targetX  = currentX;
         targetY  = currentY;
-
+ 
         int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             : WindowManager.LayoutParams.TYPE_PHONE;
-
+ 
         params = new WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -344,8 +316,8 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         params.x = (int) currentX;
         params.y = (int) currentY;
         wm.addView(rootView, params);
-
-        // Tap en el pato = micrófono
+ 
+        // Tap en el pato = abre pantalla invisible para escuchar
         duckView.setOnTouchListener(new View.OnTouchListener() {
             long touchStart;
             @Override
@@ -360,11 +332,11 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 return true;
             }
         });
-
+ 
         bubbleCard.setVisibility(View.GONE);
         setupWalkAnimation();
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  WALK ANIMATION
     // ─────────────────────────────────────────────────────────────────────────
@@ -379,13 +351,13 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         };
         walkHandler.post(walkAnim);
     }
-
+ 
     private boolean isMoving() {
         return Math.abs(targetX - currentX) > 2 || Math.abs(targetY - currentY) > 2;
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
-    //  LOOP DE MOVIMIENTO — ease-out muy lento y natural
+    //  LOOP DE MOVIMIENTO
     // ─────────────────────────────────────────────────────────────────────────
     private void startMoveLoop() {
         moveRunnable = new Runnable() {
@@ -393,19 +365,18 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 float dx   = targetX - currentX;
                 float dy   = targetY - currentY;
                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
-
+ 
                 if (dist > 1.5f) {
                     float speed = Math.min(SPEED_BASE, Math.max(0.006f, dist / 2000f));
                     currentX += dx * speed;
                     currentY += dy * speed;
-
+ 
                     if (dx > 0 != facingRight) facingRight = dx > 0;
-
+ 
                     params.x = (int) currentX;
                     params.y = (int) currentY;
                     try { wm.updateViewLayout(rootView, params); } catch (Exception ignored) {}
-
-                    // Huellas cada ~40px
+ 
                     float mx    = currentX - lastFootX;
                     float my    = currentY - lastFootY;
                     float moved = (float) Math.sqrt(mx * mx + my * my);
@@ -429,7 +400,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         };
         mainHandler.post(moveRunnable);
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  RANDOM QUACKS
     // ─────────────────────────────────────────────────────────────────────────
@@ -442,7 +413,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         };
         quackHandler.postDelayed(quackRunnable, 8000 + rng.nextInt(10000));
     }
-
+ 
     private void playQuack() {
         try {
             ToneGenerator tg = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80);
@@ -454,51 +425,50 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 .withEndAction(() -> duckView.animate().translationY(0).setDuration(130).start()).start();
         } catch (Exception ignored) {}
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
-    //  SPEECH RECOGNITION — tap al pato abre el micrófono
+    //  SPEECH — ahora usa VoiceActivity (pantalla invisible) en vez del
+    //  SpeechRecognizer directo, porque Android no permite micrófono
+    //  desde un Service flotante.
     // ─────────────────────────────────────────────────────────────────────────
     private void setupSpeechRecognizer() {
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
-        speechRecognizer.setRecognitionListener(new RecognitionListener() {
-            @Override public void onReadyForSpeech(Bundle p) {
-                mainHandler.post(() -> { isListening = true; showBubble("...te escucho 👂", 0); animateBounce(duckView); });
-            }
-            @Override public void onResults(Bundle results) {
-                List<String> m = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                if (m != null && !m.isEmpty()) {
-                    String t = m.get(0);
-                    mainHandler.post(() -> { isListening = false; showBubble("Tú: \"" + t + "\"", 2500); askClaude(t); });
+        // Receptor que espera el resultado de VoiceActivity
+        voiceResultReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String texto = intent.getStringExtra("voice_text");
+                if (texto != null && !texto.isEmpty()) {
+                    mainHandler.post(() -> {
+                        isListening = false;
+                        showBubble("Tú: \"" + texto + "\"", 2500);
+                        askClaude(texto);
+                    });
+                } else {
+                    mainHandler.post(() -> {
+                        isListening = false;
+                        showBubble("No te escuché 🦆 ¡Inténtalo!", 3000);
+                    });
                 }
             }
-            @Override public void onError(int error) {
-                mainHandler.post(() -> {
-                    isListening = false;
-                    showBubble(error == SpeechRecognizer.ERROR_NO_MATCH
-                        ? "No te escuché 🦆 ¡Inténtalo!" : "¡Quack! Error de mic 😬", 3000);
-                });
-            }
-            @Override public void onEndOfSpeech()       { isListening = false; }
-            @Override public void onBeginningOfSpeech() {}
-            @Override public void onRmsChanged(float v) {}
-            @Override public void onBufferReceived(byte[] b) {}
-            @Override public void onPartialResults(Bundle b) {}
-            @Override public void onEvent(int t, Bundle b) {}
-        });
+        };
+        IntentFilter filter = new IntentFilter("com.quacky.duck.VOICE_RESULT");
+        registerReceiver(voiceResultReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
     }
-
+ 
     private void startListening() {
         if (isTalking || isListening) return;
+        isListening = true;
+        showBubble("...te escucho 👂", 0);
+        animateBounce(duckView);
         duckView.animate().scaleX(facingRight ? 1.15f : -1.15f).scaleY(1.15f).setDuration(100)
             .withEndAction(() -> duckView.animate()
                 .scaleX(facingRight ? 1f : -1f).scaleY(1f).setDuration(100).start()).start();
-        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES");
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-        speechRecognizer.startListening(intent);
+        // Abre la pantalla invisible que sí puede usar el micrófono
+        Intent intent = new Intent(DuckOverlayService.this, VoiceActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  CLAUDE API
     // ─────────────────────────────────────────────────────────────────────────
@@ -511,7 +481,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             um.put("role", "user"); um.put("content", userMessage);
             chatHistory.add(um);
         } catch (JSONException ignored) {}
-
+ 
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject();
@@ -525,7 +495,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 JSONArray msgs = new JSONArray();
                 for (JSONObject m : chatHistory) msgs.put(m);
                 body.put("messages", msgs);
-
+ 
                 URL url = new URL(CLAUDE_URL);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
@@ -559,7 +529,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             }
         }).start();
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  BUBBLE
     // ─────────────────────────────────────────────────────────────────────────
@@ -577,7 +547,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             }
         });
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  ANIMATIONS
     // ─────────────────────────────────────────────────────────────────────────
@@ -590,7 +560,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             .withEndAction(() -> v.animate().rotation(-10f).setDuration(100)
                 .withEndAction(() -> v.animate().rotation(0f).setDuration(100).start()).start()).start();
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  NOTIFICATION
     // ─────────────────────────────────────────────────────────────────────────
@@ -611,23 +581,24 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pi).setOngoing(true).build();
     }
-
+ 
     private int dp2px(int dp) {
         return Math.round(dp * getResources().getDisplayMetrics().density);
     }
-
+ 
     @Override public IBinder onBind(Intent i) { return null; }
-
+ 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        if (sensorManager != null) sensorManager.unregisterListener(this);
-        if (rootView != null)         try { wm.removeView(rootView); }         catch (Exception ignored) {}
-        if (footprintOverlay != null) try { wm.removeView(footprintOverlay); } catch (Exception ignored) {}
-        if (touchOverlay != null)     try { wm.removeView(touchOverlay); }     catch (Exception ignored) {}
-        if (speechRecognizer != null) speechRecognizer.destroy();
+        if (sensorManager != null)        sensorManager.unregisterListener(this);
+        if (rootView != null)             try { wm.removeView(rootView); }             catch (Exception ignored) {}
+        if (footprintOverlay != null)     try { wm.removeView(footprintOverlay); }     catch (Exception ignored) {}
+        if (touchOverlay != null)         try { wm.removeView(touchOverlay); }         catch (Exception ignored) {}
+        if (voiceResultReceiver != null)  unregisterReceiver(voiceResultReceiver);
         mainHandler.removeCallbacks(moveRunnable);
         walkHandler.removeCallbacks(walkAnim);
         quackHandler.removeCallbacks(quackRunnable);
     }
 }
+ 
