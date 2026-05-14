@@ -21,10 +21,13 @@ import java.util.*;
 public class DuckOverlayService extends Service implements SensorEventListener {
  
     // ── Constantes ────────────────────────────────────────────────────────────
-    private static final String CHANNEL_ID   = "quacky_channel";
-    private static final String CLAUDE_URL   = "https://api.anthropic.com/v1/messages";
-    private static final String CLAUDE_MODEL = "claude-sonnet-4-20250514";
-    private static final String API_KEY      = "TU_API_KEY_AQUI";
+    private static final String CHANNEL_ID  = "quacky_channel";
+ 
+    // ✅ GROQ — IA gratis con Llama 3 (muy buena)
+    // Pon aquí tu key de console.groq.com (empieza con gsk_...)
+    private static final String GROQ_API_KEY = "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";
+    private static final String GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions";
+    private static final String GROQ_MODEL   = "llama-3.3-70b-versatile";
  
     // Pato pequeño: 18dp
     private static final int   DUCK_SIZE_DP = 18;
@@ -100,7 +103,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
  
         setupFootprintOverlay();
-        setupOverlay();          // ✅ Sin capa táctil de pantalla completa
+        setupOverlay();
         setupSpeechRecognizer();
         setupGyroscope();
         startMoveLoop();
@@ -112,7 +115,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  GIROSCOPIO — el pato sigue la inclinación del teléfono
+    //  GIROSCOPIO
     // ─────────────────────────────────────────────────────────────────────────
     private void setupGyroscope() {
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
@@ -212,9 +215,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  OVERLAY DEL PATO
-    //  ✅ FLAG_NOT_TOUCHABLE: el pato NO bloquea toques en las apps de abajo
-    //  El pato sólo recibe toques en su propia vista (duckView)
+    //  OVERLAY DEL PATO — solo el pato recibe toques, las apps funcionan normal
     // ─────────────────────────────────────────────────────────────────────────
     private void setupOverlay() {
         LayoutInflater inflater = LayoutInflater.from(this);
@@ -240,7 +241,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL  // toques fuera del pato pasan a las apps
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         );
@@ -249,7 +250,6 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         params.y = (int) currentY;
         wm.addView(rootView, params);
  
-        // Solo el pato responde al toque — las apps de abajo funcionan normal
         duckView.setOnTouchListener(new View.OnTouchListener() {
             long touchStart;
             @Override
@@ -259,7 +259,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 if (e.getAction() == MotionEvent.ACTION_UP
                         && System.currentTimeMillis() - touchStart < 400)
                     startListening();
-                return true; // el pato SÍ consume su propio toque
+                return true;
             }
         });
  
@@ -327,7 +327,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  QUACKS ALEATORIOS — sonido de pato real sintetizado
+    //  QUACKS ALEATORIOS — sonido de pato sintetizado
     // ─────────────────────────────────────────────────────────────────────────
     private void startRandomQuacks() {
         quackRunnable = new Runnable() {
@@ -339,36 +339,25 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         quackHandler.postDelayed(quackRunnable, 8000 + rng.nextInt(10000));
     }
  
-    // Genera un sonido de "CUAK" real usando síntesis de audio
     private void playQuack() {
         new Thread(() -> {
             try {
-                int    sampleRate  = 44100;
-                int    duracionMs  = 320;
-                int    numSamples  = sampleRate * duracionMs / 1000;
-                short[] muestras  = new short[numSamples];
+                int     sampleRate = 44100;
+                int     duracionMs = 320;
+                int     numSamples = sampleRate * duracionMs / 1000;
+                short[] muestras   = new short[numSamples];
  
                 for (int i = 0; i < numSamples; i++) {
                     double t        = (double) i / sampleRate;
                     double progreso = (double) i / numSamples;
- 
-                    // Frecuencia que baja de 700Hz a 350Hz (como un cuak real)
-                    double freq = 700.0 - 350.0 * progreso;
- 
-                    // Envolvente: sube rápido, baja lento
+                    double freq     = 700.0 - 350.0 * progreso;
                     double amp;
-                    if (progreso < 0.08) {
-                        amp = progreso / 0.08;  // ataque rápido
-                    } else {
-                        amp = 1.0 - ((progreso - 0.08) / 0.92); // decaimiento suave
-                    }
-                    amp = Math.max(0, amp);
+                    if (progreso < 0.08) amp = progreso / 0.08;
+                    else                 amp = Math.max(0, 1.0 - (progreso - 0.08) / 0.92);
  
-                    // Onda principal + armónicos para timbre de pato
                     double muestra  = amp * 0.65 * Math.sin(2 * Math.PI * freq * t);
                     muestra        += amp * 0.25 * Math.sin(2 * Math.PI * freq * 2.0 * t);
                     muestra        += amp * 0.08 * Math.sin(2 * Math.PI * freq * 3.0 * t);
-                    // Un poco de vibrato para hacerlo más orgánico
                     muestra        += amp * 0.04 * Math.sin(2 * Math.PI * 12 * t)
                                           * Math.sin(2 * Math.PI * freq * t);
  
@@ -395,11 +384,9 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 Thread.sleep(duracionMs + 80);
                 track.stop();
                 track.release();
- 
             } catch (Exception ignored) {}
         }).start();
  
-        // Animación del pato + burbuja al mismo tiempo
         mainHandler.post(() -> {
             String[] frases = {"¡Cuak!", "¡Quack!", "¡Cuaaak!", "🦆 Quack!", "¡Cuak cuak!"};
             showBubble(frases[rng.nextInt(frases.length)], 1800);
@@ -409,8 +396,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  SPEECH — usa VoiceActivity con el reconocedor del sistema (Google)
-    //  Compatible con Android 12 y anteriores Y Android 13 en adelante
+    //  SPEECH RECEIVER
     // ─────────────────────────────────────────────────────────────────────────
     private void setupSpeechRecognizer() {
         voiceResultReceiver = new BroadcastReceiver() {
@@ -422,7 +408,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                         isListening = false;
                         if (!handleVoiceCommand(texto)) {
                             showBubble("Tú: \"" + texto + "\"", 2500);
-                            askClaude(texto);
+                            askGroq(texto);
                         }
                     });
                 } else {
@@ -452,7 +438,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  COMANDOS DE VOZ DIRECTOS — llamadas a contactos
+    //  COMANDOS DE VOZ — llamadas a contactos
     // ─────────────────────────────────────────────────────────────────────────
     private boolean handleVoiceCommand(String texto) {
         String lower = texto.toLowerCase().trim();
@@ -516,14 +502,13 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 String telefono = cursor.getString(1);
                 if (nombreC == null || telefono == null) continue;
                 String cLower = nombreC.toLowerCase().trim();
- 
                 if (cLower.equals(buscar)) {
                     cursor.close();
                     return telefono.replaceAll("[^+0-9]", "");
                 }
                 int puntaje = cLower.contains(buscar) ? 2 : buscar.contains(cLower) ? 1 : 0;
                 if (puntaje > mejorPuntaje) {
-                    mejorPuntaje = puntaje;
+                    mejorPuntaje  = puntaje;
                     mejorTelefono = telefono.replaceAll("[^+0-9]", "");
                 }
             }
@@ -533,67 +518,103 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  CLAUDE API
+    //  GROQ API — Llama 3, gratis, muy rápido
+    //
+    //  Formato de petición (igual que OpenAI):
+    //  POST https://api.groq.com/openai/v1/chat/completions
+    //  Header: Authorization: Bearer gsk_...
+    //  Body:   { "model": "...", "messages": [...], "max_tokens": 1000 }
+    //
+    //  Formato de respuesta:
+    //  { "choices": [ { "message": { "content": "..." } } ] }
     // ─────────────────────────────────────────────────────────────────────────
-    private void askClaude(String userMessage) {
+    private void askGroq(String userMessage) {
         isTalking = true;
         showBubble("💭 pensando...", 0);
         animateWiggle(duckView);
+ 
         try {
             JSONObject um = new JSONObject();
-            um.put("role", "user"); um.put("content", userMessage);
+            um.put("role", "user");
+            um.put("content", userMessage);
             chatHistory.add(um);
         } catch (JSONException ignored) {}
  
         new Thread(() -> {
             try {
-                JSONObject body = new JSONObject();
-                body.put("model", CLAUDE_MODEL);
-                body.put("max_tokens", 1000);
-                body.put("system",
-                    "Eres Quacky, un patito amarillo IA que vive flotando en la pantalla del " +
-                    "teléfono de tu dueño como asistente personal avanzado. " +
-                    "Puedes hacer llamadas a contactos cuando te dicen 'llama a [nombre]'. " +
-                    "Eres muy simpático, curioso y divertido. Usas '¡Quack!' de vez en cuando. " +
-                    "Tus respuestas son CORTAS (máximo 2-3 oraciones) y siempre en español mexicano. " +
-                    "Si te piden algo que no puedes hacer, díselo con humor. " +
-                    "¡Eres el mejor pato asistente IA del mundo!");
-                JSONArray msgs = new JSONArray();
-                for (JSONObject m : chatHistory) msgs.put(m);
-                body.put("messages", msgs);
+                // Armar la lista de mensajes con el sistema al inicio
+                JSONArray messages = new JSONArray();
  
-                URL url = new URL(CLAUDE_URL);
+                // Mensaje de sistema (personalidad del pato)
+                JSONObject sistema = new JSONObject();
+                sistema.put("role", "system");
+                sistema.put("content",
+                    "Eres Quacky, un patito amarillo IA que vive flotando en la pantalla del " +
+                    "teléfono de tu dueño como asistente personal. " +
+                    "Puedes hacer llamadas a contactos cuando te dicen 'llama a [nombre]'. " +
+                    "Eres muy simpático, curioso, divertido y cariñoso. " +
+                    "Usas '¡Quack!' de vez en cuando. " +
+                    "Tus respuestas son CORTAS (máximo 2-3 oraciones) y siempre en español mexicano. " +
+                    "Si te piden algo que no puedes, díselo con humor. " +
+                    "¡Eres el mejor pato asistente IA del mundo!");
+                messages.put(sistema);
+ 
+                // Historial de conversación
+                for (JSONObject m : chatHistory) messages.put(m);
+ 
+                // Armar el cuerpo de la petición
+                JSONObject body = new JSONObject();
+                body.put("model", GROQ_MODEL);
+                body.put("max_tokens", 1000);
+                body.put("messages", messages);
+ 
+                // Conectar con Groq
+                URL url = new URL(GROQ_URL);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("x-api-key", API_KEY);
-                conn.setRequestProperty("anthropic-version", "2023-06-01");
+                conn.setRequestProperty("Authorization", "Bearer " + GROQ_API_KEY);
                 conn.setDoOutput(true);
                 conn.setConnectTimeout(15000);
                 conn.setReadTimeout(30000);
+ 
                 try (OutputStream os = conn.getOutputStream()) {
                     os.write(body.toString().getBytes(StandardCharsets.UTF_8));
                 }
+ 
+                // Leer respuesta
                 StringBuilder sb = new StringBuilder();
                 try (BufferedReader br = new BufferedReader(
                         new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
                     while ((line = br.readLine()) != null) sb.append(line);
                 }
+ 
+                // Groq responde con: choices[0].message.content
                 JSONObject resp  = new JSONObject(sb.toString());
-                String reply = resp.getJSONArray("content").getJSONObject(0).getString("text").trim();
+                String     reply = resp.getJSONArray("choices")
+                                       .getJSONObject(0)
+                                       .getJSONObject("message")
+                                       .getString("content")
+                                       .trim();
+ 
+                // Guardar en historial
                 JSONObject am = new JSONObject();
-                am.put("role", "assistant"); am.put("content", reply);
+                am.put("role", "assistant");
+                am.put("content", reply);
                 chatHistory.add(am);
                 while (chatHistory.size() > 20) chatHistory.remove(0);
+ 
                 mainHandler.post(() -> {
                     isTalking = false;
                     showBubble("🦆 " + reply, Math.max(4000, reply.length() * 60));
                 });
+ 
             } catch (Exception e) {
                 mainHandler.post(() -> {
                     isTalking = false;
-                    showBubble("¡Quack! Sin internet 😵", 4000);
+                    // Mostrar el error real para poder diagnosticarlo
+                    showBubble("¡Quack! Error: " + e.getMessage(), 5000);
                 });
             }
         }).start();
@@ -641,6 +662,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
     }
+ 
     private Notification buildNotification() {
         PendingIntent pi = PendingIntent.getActivity(this, 0,
             new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
