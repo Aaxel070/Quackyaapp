@@ -1,13 +1,16 @@
 package com.quacky.duck;
-
+ 
 import android.app.*;
 import android.content.*;
 import android.graphics.*;
+import android.graphics.drawable.*;
 import android.hardware.*;
 import android.media.*;
 import android.net.Uri;
 import android.os.*;
 import android.provider.ContactsContract;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.Voice;
 import android.view.*;
 import android.widget.*;
 import android.util.DisplayMetrics;
@@ -17,87 +20,91 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-
+ 
 public class DuckOverlayService extends Service implements SensorEventListener {
-
+ 
     // ── Constantes ────────────────────────────────────────────────────────────
-    private static final String CHANNEL_ID   = "quacky_channel";
-    private static final String CLAUDE_URL   = "https://api.anthropic.com/v1/messages";
-    private static final String CLAUDE_MODEL = "claude-sonnet-4-20250514";
-    private static final String API_KEY      = "TU_API_KEY_AQUI";
-
-    // Pato pequeño: 18dp
-    private static final int   DUCK_SIZE_DP = 18;
-
-    // Velocidad de movimiento
+    private static final String CHANNEL_ID = "quacky_channel";
+ 
+    // ✅ Pon tu key de Groq aquí (gsk_...)
+    private static final String GROQ_API_KEY = "PEGA_TU_KEY_DE_GROQ_AQUI";
+    private static final String GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions";
+    private static final String GROQ_MODEL   = "llama-3.3-70b-versatile";
+ 
+    // ✅ Pato ahora es la mitad de pequeño: 9dp
+    private static final int   DUCK_SIZE_DP = 9;
     private static final float SPEED_BASE   = 0.011f;
-
-    // Fuerza del giroscopio
     private static final float GYRO_FORCE   = 18f;
-
-    // ── Views ─────────────────────────────────────────────────────────────────
-    private WindowManager  wm;
-    private View           rootView;
-    private DuckView       duckView;
-    private TextView       bubbleText;
-    private View           bubbleCard;
-
+ 
+    // ── VENTANA 1: El animal (tamaño exacto, solo él captura toques) ──────────
+    // Usamos View genérico: puede ser DuckView (pato) o PetView (gato/perro)
+    private View                       animalView;
+    private WindowManager.LayoutParams animalParams;
+ 
+    // ── VENTANA 2: La burbuja (FLAG_NOT_TOUCHABLE = NUNCA bloquea) ───────────
+    private LinearLayout               bubbleCard;
+    private TextView                   bubbleText;
+    private WindowManager.LayoutParams bubbleParams;
+ 
+    // ── VENTANA 3: Huellas ────────────────────────────────────────────────────
+    private View                       footprintOverlay;
+ 
+    // ── WindowManager ─────────────────────────────────────────────────────────
+    private WindowManager wm;
+    private int overlayType;
+ 
     // ── Estado ────────────────────────────────────────────────────────────────
-    private WindowManager.LayoutParams params;
-    private float  targetX, targetY;
-    private float  currentX, currentY;
+    private float   currentX, currentY, targetX, targetY;
     private boolean isTalking   = false;
     private boolean isListening = false;
     private boolean facingRight = true;
     private Handler mainHandler;
     private Runnable moveRunnable;
-
+ 
     // ── Walk animation ────────────────────────────────────────────────────────
     private Handler  walkHandler = new Handler(Looper.getMainLooper());
     private float    walkPhase   = 0f;
     private Runnable walkAnim;
-
+ 
     // ── Huellas ───────────────────────────────────────────────────────────────
     private static class Footprint {
         float x, y; long born; boolean isLeft;
         Footprint(float x, float y, long born, boolean left) {
-            this.x=x; this.y=y; this.born=born; this.isLeft=left;
+            this.x = x; this.y = y; this.born = born; this.isLeft = left;
         }
     }
-    private final List<Footprint> footprints    = new ArrayList<>();
-    private View                  footprintOverlay;
+    private final List<Footprint> footprints     = new ArrayList<>();
     private static final long     FOOTPRINT_LIFE = 1800;
-
+    private long    lastFootprintTime = 0;
+    private boolean nextFootLeft      = true;
+    private float   lastFootX = -999, lastFootY = -999;
+ 
     // ── Sonidos ───────────────────────────────────────────────────────────────
     private Handler  quackHandler  = new Handler(Looper.getMainLooper());
     private Runnable quackRunnable;
     private final Random rng = new Random();
-
+    private String animalTipo = "duck"; // para saber qué sonido hacer
+ 
+    // ── TTS ───────────────────────────────────────────────────────────────────
+    private TextToSpeech tts;
+    private boolean      ttsListo = false;
+ 
     // ── Voice Result Receiver ─────────────────────────────────────────────────
     private BroadcastReceiver voiceResultReceiver;
-
+ 
     // ── Historial conversación ────────────────────────────────────────────────
     private final List<JSONObject> chatHistory = new ArrayList<>();
-
-    // ── Huella timing ─────────────────────────────────────────────────────────
-    private long    lastFootprintTime = 0;
-    private boolean nextFootLeft      = true;
-    private float   lastFootX = -999, lastFootY = -999;
-
+ 
     // ── Bubble ────────────────────────────────────────────────────────────────
     private Handler  bubbleHandler = new Handler(Looper.getMainLooper());
     private Runnable bubbleHider;
-
+ 
     // ── Giroscopio ───────────────────────────────────────────────────────────
-    private SensorManager sensorManager;
-    private Sensor        gyroSensor;
+    private SensorManager  sensorManager;
+    private Sensor         gyroSensor;
     private volatile float gyroVelX = 0f;
     private volatile float gyroVelY = 0f;
-
-    // ── Touch overlay ─────────────────────────────────────────────────────────
-    private View                       touchOverlay;
-    private WindowManager.LayoutParams touchOverlayParams;
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     @Override
     public void onCreate() {
@@ -105,126 +112,253 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         mainHandler = new Handler(Looper.getMainLooper());
         createNotificationChannel();
         startForeground(1, buildNotification());
+ 
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-
+        overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            : WindowManager.LayoutParams.TYPE_PHONE;
+ 
+        // Leer el animal seleccionado
+        SharedPreferences prefs = getSharedPreferences("quacky_prefs", MODE_PRIVATE);
+        animalTipo = prefs.getString("animal", "duck");
+ 
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        currentX = dm.widthPixels / 2f - dp(DUCK_SIZE_DP) / 2f;
+        currentY = dm.heightPixels * 0.72f;
+        targetX  = currentX;
+        targetY  = currentY;
+ 
         setupFootprintOverlay();
-        setupTouchOverlay();
-        setupOverlay();
+        setupBubbleWindow();
+        setupAnimalWindow();   // ← carga el animal correcto
+        setupTTS();
         setupSpeechRecognizer();
         setupGyroscope();
         startMoveLoop();
-        startRandomQuacks();
-
+        startRandomSounds();
+ 
         mainHandler.postDelayed(
-            () -> showBubble("¡Quack! 🐥 ¡Tócame para hablar o inclina el cel!", 5000),
+            () -> showBubble(saludoInicial(), 5000, false),
             1200);
     }
-
+ 
+    // Saludo personalizado según el animal
+    private String saludoInicial() {
+        switch (animalTipo) {
+            case "cat": return "¡Miau! 🐱 Tócame para hablar";
+            case "dog": return "¡Guau! 🐶 Tócame para hablar";
+            default:    return "¡Quack! 🐥 Tócame para hablar";
+        }
+    }
+ 
     // ─────────────────────────────────────────────────────────────────────────
-    //  TOUCH OVERLAY
-    //  FIX IMPORTANTE: se eliminó "touchOverlayParams.alpha = 0f" porque
-    //  Android deja de enviar toques a ventanas con alpha = 0.
-    //  El fondo transparente (Color.TRANSPARENT) ya lo hace invisible.
+    //  VENTANA DEL ANIMAL — carga DuckView para pato, PetView para gato/perro
     // ─────────────────────────────────────────────────────────────────────────
-    private void setupTouchOverlay() {
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            : WindowManager.LayoutParams.TYPE_PHONE;
-
-        touchOverlay = new View(this);
-        touchOverlay.setBackgroundColor(Color.TRANSPARENT);
-
-        touchOverlayParams = new WindowManager.LayoutParams(
-            dm.widthPixels,
-            dm.heightPixels,
+    private void setupAnimalWindow() {
+        int animalPx = dp(DUCK_SIZE_DP);
+ 
+        // Elegir la vista correcta según el animal seleccionado
+        switch (animalTipo) {
+            case "cat":
+                PetView catView = new PetView(this);
+                try {
+                    Bitmap catBmp = BitmapFactory.decodeResource(getResources(), R.drawable.cat);
+                    if (catBmp != null) catView.setAnimalBitmap(catBmp);
+                } catch (Exception ignored) {}
+                animalView = catView;
+                break;
+ 
+            case "dog":
+                PetView dogView = new PetView(this);
+                try {
+                    Bitmap dogBmp = BitmapFactory.decodeResource(getResources(), R.drawable.dog);
+                    if (dogBmp != null) dogView.setAnimalBitmap(dogBmp);
+                } catch (Exception ignored) {}
+                animalView = dogView;
+                break;
+ 
+            default: // "duck"
+                animalView = new DuckView(this);
+                break;
+        }
+ 
+        // Parámetros de la ventana: exactamente el tamaño del animal
+        animalParams = new WindowManager.LayoutParams(
+            animalPx, animalPx,
             overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         );
-        touchOverlayParams.gravity = Gravity.TOP | Gravity.START;
-        touchOverlayParams.x = 0;
-        touchOverlayParams.y = 0;
-        // ✅ Sin alpha=0 — así Android SÍ entrega los toques
-
-        touchOverlay.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                DisplayMetrics d = getResources().getDisplayMetrics();
-                int duckPx = dp2px(DUCK_SIZE_DP);
-                float nx = event.getRawX() - duckPx / 2f;
-                float ny = event.getRawY() - duckPx / 2f;
-                nx = Math.max(0, Math.min(nx, d.widthPixels  - duckPx));
-                ny = Math.max(0, Math.min(ny, d.heightPixels - duckPx));
-                targetX = nx;
-                targetY = ny;
-                gyroVelX = 0f;
-                gyroVelY = 0f;
+        animalParams.gravity = Gravity.TOP | Gravity.START;
+        animalParams.x = (int) currentX;
+        animalParams.y = (int) currentY;
+        wm.addView(animalView, animalParams);
+ 
+        // Toque sobre el animal = activar micrófono
+        animalView.setOnTouchListener(new View.OnTouchListener() {
+            long touchStart;
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                if (e.getAction() == MotionEvent.ACTION_DOWN)
+                    touchStart = System.currentTimeMillis();
+                if (e.getAction() == MotionEvent.ACTION_UP
+                        && System.currentTimeMillis() - touchStart < 400)
+                    startListening();
+                return true;
             }
-            return false; // pasa el toque a la app de abajo también
         });
-
-        wm.addView(touchOverlay, touchOverlayParams);
+ 
+        setupWalkAnimation();
     }
-
+ 
+    // Llamar setWalkState en el tipo correcto de vista
+    private void llamarSetWalkState(boolean moving, float phase, float dir) {
+        if (animalView instanceof DuckView) {
+            ((DuckView) animalView).setWalkState(moving, phase, dir);
+        } else if (animalView instanceof PetView) {
+            ((PetView) animalView).setWalkState(moving, phase, dir);
+        }
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  VENTANA DE LA BURBUJA — FLAG_NOT_TOUCHABLE = NUNCA bloquea toques
+    // ─────────────────────────────────────────────────────────────────────────
+    private void setupBubbleWindow() {
+        bubbleCard = new LinearLayout(this);
+        bubbleCard.setOrientation(LinearLayout.VERTICAL);
+        bubbleCard.setPadding(dp(12), dp(8), dp(12), dp(8));
+ 
+        GradientDrawable fondoBurbuja = new GradientDrawable();
+        fondoBurbuja.setCornerRadius(dp(14));
+        fondoBurbuja.setColor(0xEE1A1A3A);
+        fondoBurbuja.setStroke(dp(1), 0xFFFFD700);
+        bubbleCard.setBackground(fondoBurbuja);
+ 
+        bubbleText = new TextView(this);
+        bubbleText.setTextColor(Color.WHITE);
+        bubbleText.setTextSize(13);
+        bubbleText.setMaxWidth(dp(230));
+        bubbleCard.addView(bubbleText);
+        bubbleCard.setVisibility(View.GONE);
+ 
+        bubbleParams = new WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE  // ✅ NUNCA bloquea
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        );
+        bubbleParams.gravity = Gravity.TOP | Gravity.START;
+        bubbleParams.x = (int) currentX;
+        bubbleParams.y = Math.max(0, (int) currentY - dp(60));
+        wm.addView(bubbleCard, bubbleParams);
+    }
+ 
+    private void actualizarPosBurbuja() {
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int bx = (int) currentX - dp(20);
+        int by = (int) currentY - dp(65);
+        bx = Math.max(dp(8), Math.min(bx, dm.widthPixels - dp(240)));
+        by = Math.max(dp(8), by);
+        bubbleParams.x = bx;
+        bubbleParams.y = by;
+        try {
+            if (bubbleCard.getVisibility() == View.VISIBLE)
+                wm.updateViewLayout(bubbleCard, bubbleParams);
+        } catch (Exception ignored) {}
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  TTS
+    // ─────────────────────────────────────────────────────────────────────────
+    private void setupTTS() {
+        tts = new TextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                SharedPreferences prefs = getSharedPreferences("quacky_prefs", MODE_PRIVATE);
+                configurarVoz(prefs.getString("voz", "femenina"));
+                ttsListo = true;
+            }
+        });
+    }
+ 
+    private void configurarVoz(String tipo) {
+        if (tts == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            Set<Voice> voces = tts.getVoices();
+            if (voces != null) {
+                for (Voice v : voces) {
+                    if (v.getLocale() == null || !v.getLocale().getLanguage().equals("es")) continue;
+                    String n = v.getName().toLowerCase();
+                    boolean esM = n.contains("-m-") || n.contains("male") || n.contains("smb");
+                    boolean esF = n.contains("-f-") || n.contains("female") || n.contains("sfb") || n.contains("esf");
+                    if (tipo.equals("masculina") && esM) { tts.setVoice(v); return; }
+                    if (tipo.equals("femenina")  && esF) { tts.setVoice(v); return; }
+                }
+            }
+        }
+        tts.setLanguage(new Locale("es", "MX"));
+        tts.setPitch(tipo.equals("masculina") ? 0.78f : 1.25f);
+        tts.setSpeechRate(tipo.equals("masculina") ? 0.93f : 1.05f);
+    }
+ 
+    private void hablar(String texto) {
+        if (!ttsListo || tts == null) return;
+        String limpio = texto
+            .replaceAll("[^\\p{L}\\p{N}\\s.,;:!?áéíóúüñÁÉÍÓÚÜÑ¿¡\\-]", " ")
+            .replaceAll("\\s+", " ").trim();
+        if (!limpio.isEmpty())
+            tts.speak(limpio, TextToSpeech.QUEUE_FLUSH, null, "q_" + System.currentTimeMillis());
+    }
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  GIROSCOPIO
     // ─────────────────────────────────────────────────────────────────────────
     private void setupGyroscope() {
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
-        if (sensorManager != null) {
-            gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-            if (gyroSensor != null) {
-                sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME);
-            } else {
-                Sensor accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-                if (accel != null) sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
-            }
+        if (sensorManager == null) return;
+        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        if (gyroSensor != null) {
+            sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME);
+        } else {
+            Sensor accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            if (accel != null) sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
         }
     }
-
+ 
     @Override
     public void onSensorChanged(SensorEvent event) {
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        int duckPx = dp2px(DUCK_SIZE_DP);
-
+        int px = dp(DUCK_SIZE_DP);
         if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-            float rotX = event.values[0];
-            float rotY = event.values[1];
-            if (Math.abs(rotX) < 0.05f) rotX = 0f;
-            if (Math.abs(rotY) < 0.05f) rotY = 0f;
-            gyroVelX += rotY * GYRO_FORCE;
-            gyroVelY += rotX * GYRO_FORCE;
-            float nx = Math.max(0, Math.min(targetX + gyroVelX, dm.widthPixels  - duckPx));
-            float ny = Math.max(0, Math.min(targetY + gyroVelY, dm.heightPixels - duckPx));
-            targetX = nx; targetY = ny;
+            float rx = event.values[0], ry = event.values[1];
+            if (Math.abs(rx) < 0.05f) rx = 0f;
+            if (Math.abs(ry) < 0.05f) ry = 0f;
+            gyroVelX += ry * GYRO_FORCE; gyroVelY += rx * GYRO_FORCE;
+            targetX = Math.max(0, Math.min(targetX + gyroVelX, dm.widthPixels  - px));
+            targetY = Math.max(0, Math.min(targetY + gyroVelY, dm.heightPixels - px));
             gyroVelX *= 0.85f; gyroVelY *= 0.85f;
-
         } else if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            float ax = -event.values[0];
-            float ay =  event.values[1];
-            if (Math.abs(ax) < 0.3f) ax = 0f;
-            if (Math.abs(ay) < 0.3f) ay = 0f;
-            float nx = Math.max(0, Math.min(targetX + ax * 1.2f, dm.widthPixels  - duckPx));
-            float ny = Math.max(0, Math.min(targetY - ay * 1.2f, dm.heightPixels - duckPx));
-            targetX = nx; targetY = ny;
+            float ax = -event.values[0], ay = event.values[1];
+            if (Math.abs(ax) < 0.3f) ax = 0f; if (Math.abs(ay) < 0.3f) ay = 0f;
+            targetX = Math.max(0, Math.min(targetX + ax * 1.2f, dm.widthPixels  - px));
+            targetY = Math.max(0, Math.min(targetY - ay * 1.2f, dm.heightPixels - px));
         }
     }
-
+ 
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
-    //  FOOTPRINT OVERLAY
+    //  HUELLAS
     // ─────────────────────────────────────────────────────────────────────────
     private void setupFootprintOverlay() {
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            : WindowManager.LayoutParams.TYPE_PHONE;
-
         footprintOverlay = new View(this) {
-            private final Paint fp       = new Paint(Paint.ANTI_ALIAS_FLAG);
-            private final Path  footPath = new Path();
+            private final Paint fp = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Path fp2 = new Path();
             @Override protected void onDraw(Canvas canvas) {
                 long now = System.currentTimeMillis();
                 fp.setStyle(Paint.Style.FILL);
@@ -240,84 +374,28 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                         canvas.save();
                         canvas.translate(f.x, f.y);
                         canvas.rotate(f.isLeft ? -15f : 15f);
-                        footPath.reset();
-                        footPath.moveTo(0, 0);
-                        footPath.lineTo(-scale, scale * 0.6f);
-                        footPath.lineTo(-scale * 0.4f, scale * 1.1f);
-                        footPath.lineTo(scale * 0.2f, scale * 0.7f);
-                        footPath.lineTo(scale * 0.8f, scale * 1.1f);
-                        footPath.lineTo(scale * 1.2f, scale * 0.5f);
-                        footPath.close();
-                        canvas.drawPath(footPath, fp);
-                        canvas.restore();
+                        fp2.reset();
+                        fp2.moveTo(0, 0);
+                        fp2.lineTo(-scale, scale * 0.6f); fp2.lineTo(-scale * 0.4f, scale * 1.1f);
+                        fp2.lineTo(scale * 0.2f, scale * 0.7f); fp2.lineTo(scale * 0.8f, scale * 1.1f);
+                        fp2.lineTo(scale * 1.2f, scale * 0.5f); fp2.close();
+                        canvas.drawPath(fp2, fp); canvas.restore();
                     }
                 }
                 postInvalidateDelayed(60);
             }
         };
         footprintOverlay.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-
-        WindowManager.LayoutParams fpParams = new WindowManager.LayoutParams(
+        WindowManager.LayoutParams p = new WindowManager.LayoutParams(
             dm.widthPixels, dm.heightPixels, overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        );
-        fpParams.gravity = Gravity.TOP | Gravity.START;
-        wm.addView(footprintOverlay, fpParams);
+            PixelFormat.TRANSLUCENT);
+        p.gravity = Gravity.TOP | Gravity.START;
+        wm.addView(footprintOverlay, p);
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    //  OVERLAY DEL PATO
-    // ─────────────────────────────────────────────────────────────────────────
-    private void setupOverlay() {
-        LayoutInflater inflater = LayoutInflater.from(this);
-        rootView   = inflater.inflate(R.layout.overlay_duck, null);
-        duckView   = rootView.findViewById(R.id.duck_image);
-        bubbleCard = rootView.findViewById(R.id.bubble_card);
-        bubbleText = rootView.findViewById(R.id.bubble_text);
-
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        int duckPx = dp2px(DUCK_SIZE_DP);
-
-        currentX = dm.widthPixels / 2f - duckPx / 2f;
-        currentY = dm.heightPixels * 0.72f;
-        targetX  = currentX;
-        targetY  = currentY;
-
-        int overlayType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            : WindowManager.LayoutParams.TYPE_PHONE;
-
-        params = new WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        );
-        params.gravity = Gravity.TOP | Gravity.START;
-        params.x = (int) currentX;
-        params.y = (int) currentY;
-        wm.addView(rootView, params);
-
-        duckView.setOnTouchListener(new View.OnTouchListener() {
-            long touchStart;
-            @Override
-            public boolean onTouch(View v, MotionEvent e) {
-                if (e.getAction() == MotionEvent.ACTION_DOWN) touchStart = System.currentTimeMillis();
-                if (e.getAction() == MotionEvent.ACTION_UP
-                        && System.currentTimeMillis() - touchStart < 400) startListening();
-                return true;
-            }
-        });
-
-        bubbleCard.setVisibility(View.GONE);
-        setupWalkAnimation();
-    }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  WALK ANIMATION
     // ─────────────────────────────────────────────────────────────────────────
@@ -326,46 +404,41 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             @Override public void run() {
                 boolean moving = isMoving();
                 if (moving) { walkPhase += 0.03f; if (walkPhase > 1f) walkPhase = 0f; }
-                duckView.setWalkState(moving, walkPhase, facingRight ? 1f : -1f);
+                llamarSetWalkState(moving, walkPhase, facingRight ? 1f : -1f);
                 walkHandler.postDelayed(this, 30);
             }
         };
         walkHandler.post(walkAnim);
     }
-
+ 
     private boolean isMoving() {
         return Math.abs(targetX - currentX) > 2 || Math.abs(targetY - currentY) > 2;
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  LOOP DE MOVIMIENTO
     // ─────────────────────────────────────────────────────────────────────────
     private void startMoveLoop() {
         moveRunnable = new Runnable() {
             @Override public void run() {
-                float dx   = targetX - currentX;
-                float dy   = targetY - currentY;
+                float dx = targetX - currentX, dy = targetY - currentY;
                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                 if (dist > 1.5f) {
                     float speed = Math.min(SPEED_BASE, Math.max(0.006f, dist / 2000f));
-                    currentX += dx * speed;
-                    currentY += dy * speed;
+                    currentX += dx * speed; currentY += dy * speed;
                     if (dx > 0 != facingRight) facingRight = dx > 0;
-                    params.x = (int) currentX;
-                    params.y = (int) currentY;
-                    try { wm.updateViewLayout(rootView, params); } catch (Exception ignored) {}
-
+                    animalParams.x = (int) currentX; animalParams.y = (int) currentY;
+                    try { wm.updateViewLayout(animalView, animalParams); } catch (Exception ignored) {}
+                    actualizarPosBurbuja();
                     float mx = currentX - lastFootX, my = currentY - lastFootY;
                     float moved = (float) Math.sqrt(mx * mx + my * my);
-                    long  now   = System.currentTimeMillis();
-                    if (moved > dp2px(20) && (now - lastFootprintTime) > 400) {
-                        lastFootprintTime = now;
-                        lastFootX = currentX; lastFootY = currentY;
-                        int duckPx = dp2px(DUCK_SIZE_DP);
-                        float offX = nextFootLeft ? -dp2px(4) : dp2px(4);
+                    long now = System.currentTimeMillis();
+                    if (moved > dp(20) && (now - lastFootprintTime) > 400) {
+                        lastFootprintTime = now; lastFootX = currentX; lastFootY = currentY;
+                        float offX = nextFootLeft ? -dp(4) : dp(4);
                         synchronized (footprints) {
-                            footprints.add(new Footprint(currentX + duckPx / 2f + offX,
-                                currentY + duckPx - dp2px(4), now, nextFootLeft));
+                            footprints.add(new Footprint(currentX + dp(DUCK_SIZE_DP) / 2f + offX,
+                                currentY + dp(DUCK_SIZE_DP) - dp(4), now, nextFootLeft));
                         }
                         nextFootLeft = !nextFootLeft;
                     }
@@ -375,35 +448,126 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         };
         mainHandler.post(moveRunnable);
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
-    //  RANDOM QUACKS
+    //  SONIDOS ALEATORIOS — diferente según el animal
     // ─────────────────────────────────────────────────────────────────────────
-    private void startRandomQuacks() {
+    private void startRandomSounds() {
         quackRunnable = new Runnable() {
             @Override public void run() {
-                if (!isListening && !isTalking) playQuack();
+                if (!isListening && !isTalking) playAnimalSound();
                 quackHandler.postDelayed(this, 15000 + rng.nextInt(30000));
             }
         };
         quackHandler.postDelayed(quackRunnable, 8000 + rng.nextInt(10000));
     }
-
-    private void playQuack() {
-        try {
-            ToneGenerator tg = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80);
-            tg.startTone(ToneGenerator.TONE_PROP_BEEP2, 180);
-            mainHandler.postDelayed(tg::release, 400);
-            String[] quacks = {"¡Cuak!", "¡Quack!", "¡Cuaaak!", "🦆 Quack!", "¡Cuak cuak!"};
-            showBubble(quacks[rng.nextInt(quacks.length)], 1800);
-            duckView.animate().translationY(-8f).setDuration(130)
-                .withEndAction(() -> duckView.animate().translationY(0).setDuration(130).start()).start();
-        } catch (Exception ignored) {}
+ 
+    private void playAnimalSound() {
+        switch (animalTipo) {
+            case "cat": playSoundCat(); break;
+            case "dog": playSoundDog(); break;
+            default:    playSoundDuck(); break;
+        }
     }
-
+ 
+    // Sonido de pato sintetizado
+    private void playSoundDuck() {
+        new Thread(() -> {
+            try {
+                int sr = 44100, ms = 320, n = sr * ms / 1000; short[] s = new short[n];
+                for (int i = 0; i < n; i++) {
+                    double t = (double)i/sr, p = (double)i/n, f = 700-350*p;
+                    double a = p<0.08 ? p/0.08 : Math.max(0,1-(p-0.08)/0.92);
+                    double m = a*0.65*Math.sin(2*Math.PI*f*t)+a*0.25*Math.sin(4*Math.PI*f*t)
+                             + a*0.08*Math.sin(6*Math.PI*f*t)+a*0.04*Math.sin(24*Math.PI*t)*Math.sin(2*Math.PI*f*t);
+                    s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));
+                }
+                playRawAudio(s, sr, ms);
+            } catch (Exception ignored) {}
+        }).start();
+        mainHandler.post(() -> {
+            String[] f = {"¡Cuak!","¡Quack!","¡Cuaaak!","🦆 Quack!","¡Cuak cuak!"};
+            showBubble(f[rng.nextInt(f.length)], 1800, false);
+            animarSalto();
+        });
+    }
+ 
+    // Sonido de gato sintetizado (maullido suave)
+    private void playSoundCat() {
+        new Thread(() -> {
+            try {
+                int sr = 44100, ms = 500, n = sr * ms / 1000; short[] s = new short[n];
+                for (int i = 0; i < n; i++) {
+                    double t = (double)i/sr, p = (double)i/n;
+                    // Maullido: frecuencia sube y baja suavemente
+                    double f = 600 + 200 * Math.sin(p * Math.PI);
+                    double a = p < 0.1 ? p/0.1 : p > 0.8 ? (1-p)/0.2 : 1.0;
+                    double m = a * 0.7 * Math.sin(2*Math.PI*f*t)
+                             + a * 0.2 * Math.sin(2*Math.PI*f*2*t)
+                             + a * 0.05 * Math.sin(2*Math.PI*f*3*t);
+                    s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));
+                }
+                playRawAudio(s, sr, ms);
+            } catch (Exception ignored) {}
+        }).start();
+        mainHandler.post(() -> {
+            String[] f = {"¡Miau!","¡Miiiau!","😺 Miau~","¡Miau miau!","Purrr..."};
+            showBubble(f[rng.nextInt(f.length)], 1800, false);
+            animarSalto();
+        });
+    }
+ 
+    // Sonido de perro sintetizado (ladrido)
+    private void playSoundDog() {
+        new Thread(() -> {
+            try {
+                int sr = 44100, ms = 300, n = sr * ms / 1000; short[] s = new short[n];
+                for (int i = 0; i < n; i++) {
+                    double t = (double)i/sr, p = (double)i/n;
+                    // Ladrido: frecuencia más baja y rápida
+                    double f = 350 + 100 * Math.sin(p * Math.PI * 3);
+                    double a = p < 0.05 ? p/0.05 : p > 0.7 ? (1-p)/0.3 : 1.0;
+                    // Añadir ruido para textura de ladrido
+                    double noise = (rng.nextDouble() - 0.5) * 0.15;
+                    double m = a * (0.6 * Math.sin(2*Math.PI*f*t)
+                             + 0.25 * Math.sin(2*Math.PI*f*2*t) + noise);
+                    s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));
+                }
+                playRawAudio(s, sr, ms);
+            } catch (Exception ignored) {}
+        }).start();
+        mainHandler.post(() -> {
+            String[] f = {"¡Guau!","¡Woof!","🐶 Guau!","¡Guau guau!","¡Arf arf!"};
+            showBubble(f[rng.nextInt(f.length)], 1800, false);
+            animarSalto();
+        });
+    }
+ 
+    // Reproducir buffer de audio
+    private void playRawAudio(short[] samples, int sampleRate, int durMs) throws Exception {
+        AudioTrack track = new AudioTrack.Builder()
+            .setAudioAttributes(new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+            .setAudioFormat(new AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(samples.length * 2)
+            .setTransferMode(AudioTrack.MODE_STATIC).build();
+        track.write(samples, 0, samples.length);
+        track.play();
+        Thread.sleep(durMs + 80);
+        track.stop(); track.release();
+    }
+ 
+    private void animarSalto() {
+        if (animalView != null)
+            animalView.animate().translationY(-8f).setDuration(130)
+                .withEndAction(() -> animalView.animate().translationY(0).setDuration(130).start()).start();
+    }
+ 
     // ─────────────────────────────────────────────────────────────────────────
-    //  SPEECH — usa VoiceActivity (pantalla invisible) para el micrófono
-    //  FIX: registerReceiver compatible con Android 12 y anteriores
+    //  SPEECH RECEIVER
     // ─────────────────────────────────────────────────────────────────────────
     private void setupSpeechRecognizer() {
         voiceResultReceiver = new BroadcastReceiver() {
@@ -413,215 +577,162 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 if (texto != null && !texto.isEmpty()) {
                     mainHandler.post(() -> {
                         isListening = false;
-                        // Primero checar si es un comando directo (llamada, etc.)
                         if (!handleVoiceCommand(texto)) {
-                            showBubble("Tú: \"" + texto + "\"", 2500);
-                            askClaude(texto);
+                            showBubble("Tú: \"" + texto + "\"", 2500, false);
+                            askGroq(texto);
                         }
                     });
                 } else {
-                    mainHandler.post(() -> {
-                        isListening = false;
-                        showBubble("No te escuché 🦆 ¡Inténtalo!", 3000);
-                    });
+                    mainHandler.post(() -> { isListening = false; showBubble("No te escuché 🐾 ¡Inténtalo!", 3000, false); });
                 }
             }
         };
         IntentFilter filter = new IntentFilter("com.quacky.duck.VOICE_RESULT");
-        // ✅ Compatible con Android 12 (API 31) para abajo Y Android 13 para arriba
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
             registerReceiver(voiceResultReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(voiceResultReceiver, filter);
-        }
+        else registerReceiver(voiceResultReceiver, filter);
     }
-
+ 
     private void startListening() {
         if (isTalking || isListening) return;
+        if (tts != null && ttsListo) tts.stop();
         isListening = true;
-        showBubble("...te escucho 👂", 0);
-        animateBounce(duckView);
-        duckView.animate().scaleX(facingRight ? 1.15f : -1.15f).scaleY(1.15f).setDuration(100)
-            .withEndAction(() -> duckView.animate()
-                .scaleX(facingRight ? 1f : -1f).scaleY(1f).setDuration(100).start()).start();
+        showBubble("...te escucho 👂", 0, false);
+        if (animalView != null) animarBounce(animalView);
         Intent intent = new Intent(DuckOverlayService.this, VoiceActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
-    //  COMANDOS DE VOZ DIRECTOS
-    //  Devuelve true si ejecutó un comando, false si hay que mandar a Claude
+    //  COMANDOS DE VOZ
     // ─────────────────────────────────────────────────────────────────────────
     private boolean handleVoiceCommand(String texto) {
         String lower = texto.toLowerCase().trim();
-
-        String[] patronesLlamada = {
-            "marcale a ", "llama a ", "llámale a ", "llamar a ",
-            "marcar a ", "hablar con ", "marca a ", "llámale a "
-        };
-
-        for (String patron : patronesLlamada) {
+        String[] patrones = {"marcale a ","llama a ","llámale a ","llamar a ","marcar a ","hablar con ","marca a "};
+        for (String patron : patrones) {
             if (lower.contains(patron)) {
                 int idx = lower.indexOf(patron) + patron.length();
                 String nombre = texto.substring(idx).trim()
-                    .replace(" por favor", "")
-                    .replace(" porfavor", "")
-                    .trim();
+                    .replace(" por favor","").replace(" porfavor","").trim();
                 buscarYLlamar(nombre);
                 return true;
             }
         }
         return false;
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    //  CONTACTOS — buscar por nombre y llamar
-    // ─────────────────────────────────────────────────────────────────────────
+ 
     private void buscarYLlamar(String nombre) {
-        showBubble("🔍 Buscando a " + nombre + "...", 0);
+        showBubble("🔍 Buscando a " + nombre + "...", 0, true);
         new Thread(() -> {
-            String telefono = buscarTelefonoContacto(nombre);
+            String tel = buscarTelefono(nombre);
             mainHandler.post(() -> {
-                if (telefono != null) {
-                    showBubble("📞 Llamando a " + nombre + "... ¡Quack!", 3000);
+                if (tel != null) {
+                    showBubble("📞 Llamando a " + nombre + "...", 3000, true);
                     try {
-                        Intent llamada = new Intent(Intent.ACTION_CALL);
-                        llamada.setData(Uri.parse("tel:" + telefono));
-                        llamada.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        startActivity(llamada);
+                        Intent l = new Intent(Intent.ACTION_CALL);
+                        l.setData(Uri.parse("tel:" + tel));
+                        l.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(l);
                     } catch (SecurityException e) {
-                        showBubble("⚠️ Necesito permiso para llamar. Ve a Ajustes > Apps > Quacky > Permisos", 5000);
-                    } catch (Exception e) {
-                        showBubble("¡Quack! No pude hacer la llamada 😬", 3000);
+                        showBubble("⚠️ Necesito permiso de Teléfono en Ajustes", 5000, true);
                     }
                 } else {
-                    showBubble("🦆 No encontré a \"" + nombre + "\" en tus contactos", 3500);
+                    showBubble("No encontré a " + nombre + " en contactos", 3500, true);
                 }
             });
         }).start();
     }
-
-    private String buscarTelefonoContacto(String nombre) {
+ 
+    private String buscarTelefono(String nombre) {
         try {
-            String[] columnas = {
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-                ContactsContract.CommonDataKinds.Phone.NUMBER
-            };
-            android.database.Cursor cursor = getContentResolver().query(
+            android.database.Cursor c = getContentResolver().query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                columnas, null, null, null
-            );
-            if (cursor == null) return null;
-
-            String buscar = nombre.toLowerCase().trim();
-            String mejorTelefono = null;
-            int mejorPuntaje = 0;
-
-            while (cursor.moveToNext()) {
-                String nombreContacto = cursor.getString(0);
-                String telefono       = cursor.getString(1);
-                if (nombreContacto == null || telefono == null) continue;
-
-                String contactoLower = nombreContacto.toLowerCase().trim();
-
-                // Coincidencia exacta → devolver inmediatamente
-                if (contactoLower.equals(buscar)) {
-                    cursor.close();
-                    return telefono.replaceAll("[^+0-9]", "");
-                }
-                // Coincidencia parcial
-                int puntaje = 0;
-                if (contactoLower.contains(buscar)) puntaje = 2;
-                else if (buscar.contains(contactoLower)) puntaje = 1;
-
-                if (puntaje > mejorPuntaje) {
-                    mejorPuntaje = puntaje;
-                    mejorTelefono = telefono.replaceAll("[^+0-9]", "");
-                }
+                new String[]{ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER},
+                null, null, null);
+            if (c == null) return null;
+            String buscar = nombre.toLowerCase().trim(), mejor = null; int mejorP = 0;
+            while (c.moveToNext()) {
+                String nc = c.getString(0), tel = c.getString(1);
+                if (nc == null || tel == null) continue;
+                String nl = nc.toLowerCase().trim();
+                if (nl.equals(buscar)) { c.close(); return tel.replaceAll("[^+0-9]",""); }
+                int p = nl.contains(buscar)?2:buscar.contains(nl)?1:0;
+                if (p > mejorP) { mejorP=p; mejor=tel.replaceAll("[^+0-9]",""); }
             }
-            cursor.close();
-            return mejorTelefono;
-        } catch (Exception e) {
-            return null;
-        }
+            c.close(); return mejor;
+        } catch (Exception e) { return null; }
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
-    //  CLAUDE API — IA avanzada como asistente personal
+    //  GROQ API
     // ─────────────────────────────────────────────────────────────────────────
-    private void askClaude(String userMessage) {
+    private void askGroq(String userMessage) {
         isTalking = true;
-        showBubble("💭 pensando...", 0);
-        animateWiggle(duckView);
-        try {
-            JSONObject um = new JSONObject();
-            um.put("role", "user"); um.put("content", userMessage);
-            chatHistory.add(um);
-        } catch (JSONException ignored) {}
-
+        showBubble("💭 pensando...", 0, false);
+        if (animalView != null) animarWiggle(animalView);
+        try { JSONObject um = new JSONObject(); um.put("role","user"); um.put("content",userMessage); chatHistory.add(um); } catch (JSONException ignored) {}
+ 
         new Thread(() -> {
             try {
+                JSONArray messages = new JSONArray();
+                JSONObject sys = new JSONObject();
+                sys.put("role","system");
+ 
+                // Personalidad según el animal
+                String nombre = animalTipo.equals("cat") ? "Michi, un gatito gris IA"
+                    : animalTipo.equals("dog") ? "Guau, un perrito golden IA"
+                    : "Quacky, un patito amarillo IA";
+                String sonido = animalTipo.equals("cat") ? "¡Miau!" : animalTipo.equals("dog") ? "¡Guau!" : "¡Quack!";
+ 
+                sys.put("content", "Eres " + nombre + " que vive flotando en la pantalla. " +
+                    "Puedes llamar a contactos con 'llama a [nombre]'. " +
+                    "Eres simpático, curioso y divertido. Dices '" + sonido + "' de vez en cuando. " +
+                    "Respuestas CORTAS (máximo 2-3 oraciones) en español mexicano.");
+                messages.put(sys);
+                for (JSONObject m : chatHistory) messages.put(m);
+ 
                 JSONObject body = new JSONObject();
-                body.put("model", CLAUDE_MODEL);
-                body.put("max_tokens", 1000);
-                body.put("system",
-                    "Eres Quacky, un patito amarillo IA que vive flotando en la pantalla del " +
-                    "teléfono de tu dueño como asistente personal avanzado. " +
-                    "Puedes hacer llamadas telefónicas a contactos diciendo 'marcale a [nombre]' " +
-                    "o 'llama a [nombre]'. " +
-                    "Eres muy simpático, curioso y divertido. Usas '¡Quack!' de vez en cuando. " +
-                    "Eres entusiasta, gracioso y cariñoso. " +
-                    "Tus respuestas son CORTAS (máximo 2-3 oraciones) y siempre en español. " +
-                    "Si te piden algo que no puedes hacer, díselo con humor. " +
-                    "¡Eres el mejor pato asistente IA del mundo!");
-                JSONArray msgs = new JSONArray();
-                for (JSONObject m : chatHistory) msgs.put(m);
-                body.put("messages", msgs);
-
-                URL url = new URL(CLAUDE_URL);
+                body.put("model",GROQ_MODEL); body.put("max_tokens",300); body.put("messages",messages);
+ 
+                URL url = new URL(GROQ_URL);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("x-api-key", API_KEY);
-                conn.setRequestProperty("anthropic-version", "2023-06-01");
-                conn.setDoOutput(true);
-                conn.setConnectTimeout(15000);
-                conn.setReadTimeout(30000);
-                try (OutputStream os = conn.getOutputStream()) {
-                    os.write(body.toString().getBytes(StandardCharsets.UTF_8));
-                }
+                conn.setRequestProperty("Content-Type","application/json");
+                conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);
+                conn.setDoOutput(true); conn.setConnectTimeout(15000); conn.setReadTimeout(30000);
+                try (OutputStream os = conn.getOutputStream()) { os.write(body.toString().getBytes(StandardCharsets.UTF_8)); }
                 StringBuilder sb = new StringBuilder();
-                try (BufferedReader br = new BufferedReader(
-                        new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = br.readLine()) != null) sb.append(line);
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))) {
+                    String line; while ((line=br.readLine())!=null) sb.append(line);
                 }
-                JSONObject resp  = new JSONObject(sb.toString());
-                String reply = resp.getJSONArray("content").getJSONObject(0).getString("text").trim();
-                JSONObject am = new JSONObject();
-                am.put("role", "assistant"); am.put("content", reply);
+                String reply = new JSONObject(sb.toString()).getJSONArray("choices")
+                    .getJSONObject(0).getJSONObject("message").getString("content").trim();
+                JSONObject am = new JSONObject(); am.put("role","assistant"); am.put("content",reply);
                 chatHistory.add(am);
                 while (chatHistory.size() > 20) chatHistory.remove(0);
-                mainHandler.post(() -> {
-                    isTalking = false;
-                    showBubble("🦆 " + reply, Math.max(4000, reply.length() * 60));
-                });
+                mainHandler.post(() -> { isTalking=false; showBubble("🐾 "+reply, Math.max(4000,reply.length()*60), true); });
             } catch (Exception e) {
-                mainHandler.post(() -> { isTalking = false; showBubble("¡Quack! Sin internet 😵", 4000); });
+                mainHandler.post(() -> { isTalking=false; showBubble("Error: "+e.getMessage(), 5000, false); });
             }
         }).start();
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  BUBBLE
     // ─────────────────────────────────────────────────────────────────────────
-    private void showBubble(String text, int durationMs) {
+    private void showBubble(String text, int durationMs, boolean hablarEnVoz) {
         mainHandler.post(() -> {
             bubbleText.setText(text);
+            actualizarPosBurbuja();
             bubbleCard.setVisibility(View.VISIBLE);
             bubbleCard.setAlpha(0f);
             bubbleCard.animate().alpha(1f).setDuration(200).start();
+            try { wm.updateViewLayout(bubbleCard, bubbleParams); } catch (Exception ignored) {}
+            if (hablarEnVoz) {
+                String v = text.replaceAll("^[🦆🐱🐶🐾📞🔍⚠️💭]\\s*","");
+                hablar(v);
+            }
             if (bubbleHider != null) bubbleHandler.removeCallbacks(bubbleHider);
             if (durationMs > 0) {
                 bubbleHider = () -> bubbleCard.animate().alpha(0f).setDuration(300)
@@ -630,57 +741,50 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             }
         });
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    //  ANIMATIONS
-    // ─────────────────────────────────────────────────────────────────────────
-    private void animateBounce(View v) {
+ 
+    private void animarBounce(View v) {
         v.animate().translationY(-14f).setDuration(180)
-            .withEndAction(() -> v.animate().translationY(0).setDuration(180).start()).start();
+            .withEndAction(()->v.animate().translationY(0).setDuration(180).start()).start();
     }
-    private void animateWiggle(View v) {
+    private void animarWiggle(View v) {
         v.animate().rotation(10f).setDuration(100)
-            .withEndAction(() -> v.animate().rotation(-10f).setDuration(100)
-                .withEndAction(() -> v.animate().rotation(0f).setDuration(100).start()).start()).start();
+            .withEndAction(()->v.animate().rotation(-10f).setDuration(100)
+                .withEndAction(()->v.animate().rotation(0f).setDuration(100).start()).start()).start();
     }
-
+ 
     // ─────────────────────────────────────────────────────────────────────────
     //  NOTIFICATION
     // ─────────────────────────────────────────────────────────────────────────
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel ch = new NotificationChannel(
-                CHANNEL_ID, "Quacky Pato IA", NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("Quacky flotando sobre tus apps");
+            NotificationChannel ch = new NotificationChannel(CHANNEL_ID,"Quacky IA",NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
     }
     private Notification buildNotification() {
-        PendingIntent pi = PendingIntent.getActivity(this, 0,
-            new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("🐥 Quacky está vivo")
+        PendingIntent pi = PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE);
+        return new NotificationCompat.Builder(this,CHANNEL_ID)
+            .setContentTitle("🐾 Quacky está activo")
             .setContentText("Tócame · habla conmigo 🎤")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pi).setOngoing(true).build();
     }
-
-    private int dp2px(int dp) {
-        return Math.round(dp * getResources().getDisplayMetrics().density);
-    }
-
+ 
+    private int dp(int val) { return Math.round(val * getResources().getDisplayMetrics().density); }
     @Override public IBinder onBind(Intent i) { return null; }
-
+ 
     @Override
     public void onDestroy() {
         super.onDestroy();
         if (sensorManager != null)       sensorManager.unregisterListener(this);
-        if (rootView != null)            try { wm.removeView(rootView); }            catch (Exception ignored) {}
+        if (animalView != null)          try { wm.removeView(animalView); }          catch (Exception ignored) {}
+        if (bubbleCard != null)          try { wm.removeView(bubbleCard); }          catch (Exception ignored) {}
         if (footprintOverlay != null)    try { wm.removeView(footprintOverlay); }    catch (Exception ignored) {}
-        if (touchOverlay != null)        try { wm.removeView(touchOverlay); }        catch (Exception ignored) {}
         if (voiceResultReceiver != null) unregisterReceiver(voiceResultReceiver);
+        if (tts != null) { tts.stop(); tts.shutdown(); }
         mainHandler.removeCallbacks(moveRunnable);
         walkHandler.removeCallbacks(walkAnim);
         quackHandler.removeCallbacks(quackRunnable);
     }
 }
+ 
