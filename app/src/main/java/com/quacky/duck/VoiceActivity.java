@@ -1,79 +1,58 @@
 package com.quacky.duck;
-
+ 
 import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
-import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
-import android.speech.SpeechRecognizer;
 import java.util.List;
-
+ 
+// Pantalla invisible que usa el reconocimiento de voz del sistema (Google).
+// Es mucho más confiable que el SpeechRecognizer directo.
 public class VoiceActivity extends Activity {
-
-    private SpeechRecognizer speechRecognizer;
-
+ 
+    private static final int PETICION_VOZ = 1;
+ 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // Pantalla completamente transparente — el usuario no ve nada
-        getWindow().setBackgroundDrawableResource(android.R.color.transparent);
-        setContentView(new android.view.View(this));
-        iniciarMicrofono();
+        try {
+            // Lanzar el reconocedor de voz del sistema (Google)
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX"); // Español México
+            intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+            intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Habla con Quacky 🦆");
+            startActivityForResult(intent, PETICION_VOZ);
+        } catch (Exception e) {
+            // Si no hay reconocedor instalado, avisar al pato
+            enviarResultado("");
+            finish();
+        }
     }
-
-    private void iniciarMicrofono() {
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
-        speechRecognizer.setRecognitionListener(new RecognitionListener() {
-
-            @Override
-            public void onResults(Bundle results) {
-                List<String> matches = results.getStringArrayList(
-                    SpeechRecognizer.RESULTS_RECOGNITION);
-                String textoEscuchado = (matches != null && !matches.isEmpty())
-                    ? matches.get(0) : "";
-                enviarResultado(textoEscuchado, null);
-                terminar();
+ 
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PETICION_VOZ) {
+            String texto = "";
+            if (resultCode == RESULT_OK && data != null) {
+                List<String> resultados = data.getStringArrayListExtra(
+                    RecognizerIntent.EXTRA_RESULTS);
+                if (resultados != null && !resultados.isEmpty()) {
+                    texto = resultados.get(0);
+                }
             }
-
-            @Override
-            public void onError(int error) {
-                enviarResultado(null, "error");
-                terminar();
-            }
-
-            @Override public void onReadyForSpeech(Bundle p) {}
-            @Override public void onBeginningOfSpeech() {}
-            @Override public void onRmsChanged(float v) {}
-            @Override public void onBufferReceived(byte[] b) {}
-            @Override public void onEndOfSpeech() {}
-            @Override public void onPartialResults(Bundle b) {}
-            @Override public void onEvent(int t, Bundle b) {}
-        });
-
-        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES");
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-        speechRecognizer.startListening(intent);
-    }
-
-    private void enviarResultado(String texto, String error) {
-        Intent resultado = new Intent("com.quacky.duck.VOICE_RESULT");
-        resultado.setPackage(getPackageName());
-        if (texto != null) resultado.putExtra("voice_text", texto);
-        if (error != null) resultado.putExtra("voice_error", error);
-        sendBroadcast(resultado);
-    }
-
-    private void terminar() {
-        if (speechRecognizer != null) speechRecognizer.destroy();
+            enviarResultado(texto);
+        }
         finish();
     }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        if (speechRecognizer != null) speechRecognizer.destroy();
+ 
+    private void enviarResultado(String texto) {
+        Intent resultado = new Intent("com.quacky.duck.VOICE_RESULT");
+        resultado.setPackage(getPackageName());
+        resultado.putExtra("voice_text", texto);
+        sendBroadcast(resultado);
     }
 }
+ 
