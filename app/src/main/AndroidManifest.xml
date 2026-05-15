@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Permisos necesarios -->
+ 
+    <!-- Permisos básicos -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -8,9 +9,21 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Permisos para contactos y llamadas -->
+ 
+    <!-- Contactos y teléfono -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
+ 
+    <!-- Alarma -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+ 
+    <!-- Calendario -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+ 
+    <!-- Wake lock para doble botón power -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+ 
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -18,7 +31,8 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.Quacky">
-        <!-- Actividad principal (solo para permisos y arranque) -->
+ 
+        <!-- Pantalla principal -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -28,14 +42,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <!-- Pantalla invisible que maneja el micrófono cuando tocas al pato -->
+ 
+        <!-- Pantalla invisible para el micrófono -->
         <activity
             android:name=".VoiceActivity"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true"
             android:taskAffinity=""
             android:exported="false" />
-        <!-- Servicio foreground que muestra el pato flotante -->
+ 
+        <!-- Servicio del animal flotante -->
         <service
             android:name=".DuckOverlayService"
             android:exported="false"
@@ -44,6 +60,7 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="explanation" />
         </service>
+ 
         <!-- Arranque automático al encender el teléfono -->
         <receiver
             android:name=".BootReceiver"
@@ -52,6 +69,7 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+ 
     </application>
 </manifest>
  
