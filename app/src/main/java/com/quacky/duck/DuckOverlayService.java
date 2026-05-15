@@ -30,12 +30,12 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private static final String GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions";
     private static final String GROQ_MODEL   = "llama-3.3-70b-versatile";
  
-    // ✅ Tamaño regresado a 18dp
-    private static final int DUCK_SIZE_DP = 40;
+    // ✅ Tamaño grande: 60dp
+    private static final int   DUCK_SIZE_DP = 60;
     private static final float SPEED_BASE   = 0.011f;
     private static final float GYRO_FORCE   = 18f;
  
-    // Ventana del animal (exactamente su tamaño, no bloquea toques)
+    // Ventana del animal
     private View                       animalView;
     private WindowManager.LayoutParams animalParams;
  
@@ -82,6 +82,12 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private boolean      ttsListo = false;
  
     private BroadcastReceiver voiceResultReceiver;
+ 
+    // ── Receptor del doble botón de power ────────────────────────────────────
+    private BroadcastReceiver powerButtonReceiver;
+    private long lastPowerPress = 0;
+    private static final long DOBLE_PRESS_MS = 600; // máximo 600ms entre pulsaciones
+ 
     private final List<JSONObject> chatHistory = new ArrayList<>();
  
     private Handler  bubbleHandler = new Handler(Looper.getMainLooper());
@@ -104,7 +110,6 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             : WindowManager.LayoutParams.TYPE_PHONE;
  
-        // ✅ Lee el animal y voz en cada arranque (así refleja lo elegido en la app)
         SharedPreferences prefs = getSharedPreferences("quacky_prefs", MODE_PRIVATE);
         animalTipo = prefs.getString("animal", "duck");
  
@@ -119,6 +124,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         setupAnimalWindow();
         setupTTS();
         setupSpeechRecognizer();
+        setupPowerButtonReceiver();  // ✅ Doble botón de power
         setupGyroscope();
         startMoveLoop();
         startRandomSounds();
@@ -128,15 +134,44 @@ public class DuckOverlayService extends Service implements SensorEventListener {
  
     private String saludoInicial() {
         switch (animalTipo) {
-            case "cat": return "¡Miau! 🐱 Tócame para hablar";
-            case "dog": return "¡Guau! 🐶 Tócame para hablar";
-            default:    return "¡Quack! 🐥 Tócame para hablar";
+            case "cat": return "¡Miau! 🐱 Tócame o presiona 2 veces power";
+            case "dog": return "¡Guau! 🐶 Tócame o presiona 2 veces power";
+            default:    return "¡Quack! 🐥 Tócame o presiona 2 veces power";
         }
     }
  
     // ─────────────────────────────────────────────────────────────────────────
+    //  DOBLE BOTÓN DE POWER — activa el micrófono
+    // ─────────────────────────────────────────────────────────────────────────
+    private void setupPowerButtonReceiver() {
+        powerButtonReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (!Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) return;
+                long ahora = System.currentTimeMillis();
+                if (ahora - lastPowerPress <= DOBLE_PRESS_MS) {
+                    // ¡Doble pulsación detectada!
+                    mainHandler.post(() -> {
+                        // Encender pantalla si está apagada y activar escucha
+                        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                        PowerManager.WakeLock wl = pm.newWakeLock(
+                            PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                                | PowerManager.ACQUIRE_CAUSES_WAKEUP, "quacky:wakelock");
+                        wl.acquire(3000);
+                        startListening();
+                    });
+                    lastPowerPress = 0;
+                } else {
+                    lastPowerPress = ahora;
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+        registerReceiver(powerButtonReceiver, filter);
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
     //  VENTANA DEL ANIMAL
-    //  ✅ Usa getIdentifier() — nunca falla en compilación aunque no exista la imagen
     // ─────────────────────────────────────────────────────────────────────────
     private void setupAnimalWindow() {
         int animalPx = dp(DUCK_SIZE_DP);
@@ -144,13 +179,9 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         switch (animalTipo) {
             case "cat": {
                 PetView pv = new PetView(this);
-                // getIdentifier busca por nombre en tiempo de ejecución, NO en compilación
                 int resId = getResources().getIdentifier("cat", "drawable", getPackageName());
                 if (resId != 0) {
-                    try {
-                        Bitmap bmp = BitmapFactory.decodeResource(getResources(), resId);
-                        if (bmp != null) pv.setAnimalBitmap(bmp);
-                    } catch (Exception ignored) {}
+                    try { Bitmap b = BitmapFactory.decodeResource(getResources(), resId); if (b != null) pv.setAnimalBitmap(b); } catch (Exception ignored) {}
                 }
                 animalView = pv;
                 break;
@@ -159,22 +190,18 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 PetView pv = new PetView(this);
                 int resId = getResources().getIdentifier("dog", "drawable", getPackageName());
                 if (resId != 0) {
-                    try {
-                        Bitmap bmp = BitmapFactory.decodeResource(getResources(), resId);
-                        if (bmp != null) pv.setAnimalBitmap(bmp);
-                    } catch (Exception ignored) {}
+                    try { Bitmap b = BitmapFactory.decodeResource(getResources(), resId); if (b != null) pv.setAnimalBitmap(b); } catch (Exception ignored) {}
                 }
                 animalView = pv;
                 break;
             }
-            default: // "duck"
+            default:
                 animalView = new DuckView(this);
                 break;
         }
  
         animalParams = new WindowManager.LayoutParams(
-            animalPx, animalPx,
-            overlayType,
+            animalPx, animalPx, overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -195,19 +222,16 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 return true;
             }
         });
- 
         setupWalkAnimation();
     }
  
     private void llamarSetWalkState(boolean moving, float phase, float dir) {
-        if (animalView instanceof DuckView)
-            ((DuckView) animalView).setWalkState(moving, phase, dir);
-        else if (animalView instanceof PetView)
-            ((PetView) animalView).setWalkState(moving, phase, dir);
+        if (animalView instanceof DuckView)   ((DuckView)  animalView).setWalkState(moving, phase, dir);
+        else if (animalView instanceof PetView) ((PetView) animalView).setWalkState(moving, phase, dir);
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  VENTANA DE LA BURBUJA — FLAG_NOT_TOUCHABLE = NUNCA bloquea toques
+    //  VENTANA DE LA BURBUJA
     // ─────────────────────────────────────────────────────────────────────────
     private void setupBubbleWindow() {
         bubbleCard = new LinearLayout(this);
@@ -231,14 +255,14 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         );
         bubbleParams.gravity = Gravity.TOP | Gravity.START;
         bubbleParams.x = (int) currentX;
-        bubbleParams.y = Math.max(0, (int) currentY - dp(60));
+        bubbleParams.y = Math.max(0, (int) currentY - dp(70));
         wm.addView(bubbleCard, bubbleParams);
     }
  
     private void actualizarPosBurbuja() {
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        int bx = Math.max(dp(8), Math.min((int) currentX - dp(20), dm.widthPixels - dp(240)));
-        int by = Math.max(dp(8), (int) currentY - dp(65));
+        int bx = Math.max(dp(8), Math.min((int) currentX - dp(10), dm.widthPixels - dp(240)));
+        int by = Math.max(dp(8), (int) currentY - dp(75));
         bubbleParams.x = bx; bubbleParams.y = by;
         try { if (bubbleCard.getVisibility() == View.VISIBLE) wm.updateViewLayout(bubbleCard, bubbleParams); } catch (Exception ignored) {}
     }
@@ -263,10 +287,8 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 for (Voice v : voces) {
                     if (v.getLocale() == null || !v.getLocale().getLanguage().equals("es")) continue;
                     String n = v.getName().toLowerCase();
-                    boolean esM = n.contains("-m-") || n.contains("male") || n.contains("smb");
-                    boolean esF = n.contains("-f-") || n.contains("female") || n.contains("sfb") || n.contains("esf");
-                    if (tipo.equals("masculina") && esM) { tts.setVoice(v); return; }
-                    if (tipo.equals("femenina")  && esF) { tts.setVoice(v); return; }
+                    if (tipo.equals("masculina") && (n.contains("-m-") || n.contains("male") || n.contains("smb"))) { tts.setVoice(v); return; }
+                    if (tipo.equals("femenina")  && (n.contains("-f-") || n.contains("female") || n.contains("sfb") || n.contains("esf"))) { tts.setVoice(v); return; }
                 }
             }
         }
@@ -344,8 +366,10 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             }
         };
         footprintOverlay.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-        WindowManager.LayoutParams p = new WindowManager.LayoutParams(dm.widthPixels, dm.heightPixels, overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT);
+        WindowManager.LayoutParams p = new WindowManager.LayoutParams(
+            dm.widthPixels, dm.heightPixels, overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT);
         p.gravity = Gravity.TOP | Gravity.START;
         wm.addView(footprintOverlay, p);
     }
@@ -414,45 +438,25 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
  
     private void playSoundDuck() {
-        new Thread(()->{try{int sr=44100,ms=320,n=sr*ms/1000;short[] s=new short[n];
-            for(int i=0;i<n;i++){double t=(double)i/sr,p=(double)i/n,f=700-350*p,a=p<0.08?p/0.08:Math.max(0,1-(p-0.08)/0.92);
-            double m=a*0.65*Math.sin(2*Math.PI*f*t)+a*0.25*Math.sin(4*Math.PI*f*t)+a*0.08*Math.sin(6*Math.PI*f*t)+a*0.04*Math.sin(24*Math.PI*t)*Math.sin(2*Math.PI*f*t);
-            s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));}
-            playRawAudio(s,sr,ms);}catch(Exception ignored){}}).start();
-        mainHandler.post(()->{String[] f={"¡Cuak!","¡Quack!","¡Cuaaak!","🦆 Quack!","¡Cuak cuak!"};showBubble(f[rng.nextInt(f.length)],1800,false);animarSalto();});
+        new Thread(()->{try{int sr=44100,ms=320,n=sr*ms/1000;short[] s=new short[n];for(int i=0;i<n;i++){double t=(double)i/sr,p=(double)i/n,f=700-350*p,a=p<0.08?p/0.08:Math.max(0,1-(p-0.08)/0.92);double m=a*0.65*Math.sin(2*Math.PI*f*t)+a*0.25*Math.sin(4*Math.PI*f*t)+a*0.08*Math.sin(6*Math.PI*f*t);s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));}playRawAudio(s,sr,ms);}catch(Exception ignored){}}).start();
+        mainHandler.post(()->{String[] f={"¡Cuak!","¡Quack!","¡Cuaaak!","🦆 Quack!"};showBubble(f[rng.nextInt(f.length)],1800,false);animarSalto();});
     }
- 
     private void playSoundCat() {
-        new Thread(()->{try{int sr=44100,ms=500,n=sr*ms/1000;short[] s=new short[n];
-            for(int i=0;i<n;i++){double t=(double)i/sr,p=(double)i/n,f=600+200*Math.sin(p*Math.PI);
-            double a=p<0.1?p/0.1:p>0.8?(1-p)/0.2:1.0;
-            double m=a*(0.7*Math.sin(2*Math.PI*f*t)+0.2*Math.sin(4*Math.PI*f*t)+0.05*Math.sin(6*Math.PI*f*t));
-            s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));}
-            playRawAudio(s,sr,ms);}catch(Exception ignored){}}).start();
-        mainHandler.post(()->{String[] f={"¡Miau!","¡Miiiau!","😺 Miau~","¡Miau miau!","Purrr..."};showBubble(f[rng.nextInt(f.length)],1800,false);animarSalto();});
+        new Thread(()->{try{int sr=44100,ms=500,n=sr*ms/1000;short[] s=new short[n];for(int i=0;i<n;i++){double t=(double)i/sr,p=(double)i/n,f=600+200*Math.sin(p*Math.PI),a=p<0.1?p/0.1:p>0.8?(1-p)/0.2:1.0;double m=a*(0.7*Math.sin(2*Math.PI*f*t)+0.2*Math.sin(4*Math.PI*f*t));s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));}playRawAudio(s,sr,ms);}catch(Exception ignored){}}).start();
+        mainHandler.post(()->{String[] f={"¡Miau!","¡Miiiau!","😺 Miau~","Purrr..."};showBubble(f[rng.nextInt(f.length)],1800,false);animarSalto();});
     }
- 
     private void playSoundDog() {
-        new Thread(()->{try{int sr=44100,ms=300,n=sr*ms/1000;short[] s=new short[n];
-            for(int i=0;i<n;i++){double t=(double)i/sr,p=(double)i/n,f=350+100*Math.sin(p*Math.PI*3);
-            double a=p<0.05?p/0.05:p>0.7?(1-p)/0.3:1.0,noise=(rng.nextDouble()-0.5)*0.15;
-            double m=a*(0.6*Math.sin(2*Math.PI*f*t)+0.25*Math.sin(4*Math.PI*f*t)+noise);
-            s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));}
-            playRawAudio(s,sr,ms);}catch(Exception ignored){}}).start();
-        mainHandler.post(()->{String[] f={"¡Guau!","¡Woof!","🐶 Guau!","¡Guau guau!","¡Arf arf!"};showBubble(f[rng.nextInt(f.length)],1800,false);animarSalto();});
+        new Thread(()->{try{int sr=44100,ms=300,n=sr*ms/1000;short[] s=new short[n];for(int i=0;i<n;i++){double t=(double)i/sr,p=(double)i/n,f=350+100*Math.sin(p*Math.PI*3),a=p<0.05?p/0.05:p>0.7?(1-p)/0.3:1.0,noise=(rng.nextDouble()-0.5)*0.15;double m=a*(0.6*Math.sin(2*Math.PI*f*t)+0.25*Math.sin(4*Math.PI*f*t)+noise);s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));}playRawAudio(s,sr,ms);}catch(Exception ignored){}}).start();
+        mainHandler.post(()->{String[] f={"¡Guau!","¡Woof!","🐶 Guau!","¡Arf arf!"};showBubble(f[rng.nextInt(f.length)],1800,false);animarSalto();});
     }
  
-    private void playRawAudio(short[] samples, int sampleRate, int durMs) throws Exception {
-        AudioTrack track = new AudioTrack.Builder()
-            .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
-            .setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-            .setBufferSizeInBytes(samples.length*2).setTransferMode(AudioTrack.MODE_STATIC).build();
-        track.write(samples,0,samples.length); track.play();
-        Thread.sleep(durMs+80); track.stop(); track.release();
+    private void playRawAudio(short[] samples, int sr, int durMs) throws Exception {
+        AudioTrack t=new AudioTrack.Builder().setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()).setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sr).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build()).setBufferSizeInBytes(samples.length*2).setTransferMode(AudioTrack.MODE_STATIC).build();
+        t.write(samples,0,samples.length);t.play();Thread.sleep(durMs+80);t.stop();t.release();
     }
  
     private void animarSalto() {
-        if (animalView!=null) animalView.animate().translationY(-8f).setDuration(130).withEndAction(()->animalView.animate().translationY(0).setDuration(130).start()).start();
+        if (animalView!=null) animalView.animate().translationY(-10f).setDuration(130).withEndAction(()->animalView.animate().translationY(0).setDuration(130).start()).start();
     }
  
     // ─────────────────────────────────────────────────────────────────────────
@@ -463,7 +467,13 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             @Override public void onReceive(Context context, Intent intent) {
                 String texto = intent.getStringExtra("voice_text");
                 if (texto!=null && !texto.isEmpty()) {
-                    mainHandler.post(()->{isListening=false;if(!handleVoiceCommand(texto)){showBubble("Tú: \""+texto+"\"",2500,false);askGroq(texto);}});
+                    mainHandler.post(()->{
+                        isListening=false;
+                        if (!handleVoiceCommand(texto)) {
+                            showBubble("Tú: \""+texto+"\"",2500,false);
+                            askGroq(texto);
+                        }
+                    });
                 } else {
                     mainHandler.post(()->{isListening=false;showBubble("No te escuché 🐾 ¡Inténtalo!",3000,false);});
                 }
@@ -478,26 +488,88 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private void startListening() {
         if (isTalking||isListening) return;
         if (tts!=null&&ttsListo) tts.stop();
-        isListening=true; showBubble("...te escucho 👂",0,false);
+        isListening=true;
+        showBubble("...te escucho 👂",0,false);
         if (animalView!=null) animalView.animate().translationY(-14f).setDuration(180).withEndAction(()->animalView.animate().translationY(0).setDuration(180).start()).start();
-        Intent intent = new Intent(DuckOverlayService.this, VoiceActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(intent);
+        Intent intent=new Intent(DuckOverlayService.this, VoiceActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  COMANDOS DE VOZ
+    //  COMANDOS DE VOZ — llamadas, WhatsApp, música, y más
     // ─────────────────────────────────────────────────────────────────────────
     private boolean handleVoiceCommand(String texto) {
-        String lower=texto.toLowerCase().trim();
-        for (String patron:new String[]{"marcale a ","llama a ","llámale a ","llamar a ","marcar a ","hablar con ","marca a "}) {
-            if (lower.contains(patron)) {
-                String nombre=texto.substring(lower.indexOf(patron)+patron.length()).trim().replace(" por favor","").replace(" porfavor","").trim();
-                buscarYLlamar(nombre); return true;
+        String lower = texto.toLowerCase().trim();
+ 
+        // ── 1. Llamada telefónica normal ────────────────────────────────────
+        String[] patronesLlamada = {"marcale a ","llama a ","llámale a ","llamar a ","marcar a ","marca a "};
+        for (String p : patronesLlamada) {
+            if (lower.contains(p) && !lower.contains("whatsapp") && !lower.contains("wsp") && !lower.contains("wasap")) {
+                String nombre = extraerNombre(texto, lower, p);
+                buscarYLlamar(nombre);
+                return true;
             }
         }
+ 
+        // ── 2. WhatsApp ─────────────────────────────────────────────────────
+        String[] patronesWsp = {"whatsapp a ","wsp a ","wasap a ","manda whatsapp a ","mándale whatsapp a ",
+                                "manda un whatsapp a ","escríbele por whatsapp a ","mensaje por whatsapp a "};
+        for (String p : patronesWsp) {
+            if (lower.contains(p)) {
+                String nombre = extraerNombre(texto, lower, p);
+                abrirWhatsApp(nombre);
+                return true;
+            }
+        }
+        // También detectar "mándale/escríbele a [nombre] por whatsapp"
+        if (lower.contains("whatsapp") || lower.contains("wsp") || lower.contains("wasap")) {
+            for (String p : new String[]{"mándale a ","escríbele a ","mensaje a ","hablar con "}) {
+                if (lower.contains(p)) {
+                    String nombre = extraerNombreAntesPalabra(texto, lower, p, "por");
+                    abrirWhatsApp(nombre);
+                    return true;
+                }
+            }
+        }
+ 
+        // ── 3. Música ────────────────────────────────────────────────────────
+        if (lower.contains("pon música") || lower.contains("poner música") || lower.contains("reproduce música")
+            || lower.contains("abre spotify") || lower.contains("abrir spotify")
+            || lower.contains("pon spotify") || lower.contains("tidal") || lower.contains("qobuz")
+            || lower.contains("youtube music") || lower.contains("deezer") || lower.contains("apple music")
+            || lower.contains("pon una canción") || lower.contains("música por favor")) {
+ 
+            String app = detectarAppMusica(lower);
+            abrirAppMusica(app);
+            return true;
+        }
+ 
+        // ── 4. Abrir apps generales ──────────────────────────────────────────
+        if (lower.startsWith("abre ") || lower.startsWith("abrir ") || lower.startsWith("abre la app") || lower.startsWith("abrir la app")) {
+            String appNombre = lower.replace("abre la app de ","").replace("abrir la app de ","")
+                .replace("abre ","").replace("abrir ","").trim();
+            abrirAppPorNombre(appNombre);
+            return true;
+        }
+ 
         return false;
     }
  
+    private String extraerNombre(String texto, String lower, String patron) {
+        int idx = lower.indexOf(patron) + patron.length();
+        return texto.substring(idx).trim().replace(" por favor","").replace(" porfavor","").trim();
+    }
+ 
+    private String extraerNombreAntesPalabra(String texto, String lower, String patron, String hasta) {
+        int idx = lower.indexOf(patron) + patron.length();
+        String resto = texto.substring(idx).trim();
+        int corte = resto.toLowerCase().indexOf(" " + hasta + " ");
+        if (corte > 0) resto = resto.substring(0, corte);
+        return resto.replace(" por favor","").replace(" porfavor","").trim();
+    }
+ 
+    // ── Llamada normal ────────────────────────────────────────────────────────
     private void buscarYLlamar(String nombre) {
         showBubble("🔍 Buscando a "+nombre+"...",0,true);
         new Thread(()->{
@@ -507,11 +579,137 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                     showBubble("📞 Llamando a "+nombre+"...",3000,true);
                     try{Intent l=new Intent(Intent.ACTION_CALL);l.setData(Uri.parse("tel:"+tel));l.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(l);}
                     catch(SecurityException e){showBubble("⚠️ Necesito permiso de Teléfono en Ajustes",5000,true);}
-                } else {showBubble("No encontré a "+nombre+" en contactos",3500,true);}
+                } else showBubble("No encontré a "+nombre+" en contactos",3500,true);
             });
         }).start();
     }
  
+    // ── WhatsApp ──────────────────────────────────────────────────────────────
+    private void abrirWhatsApp(String nombre) {
+        showBubble("🔍 Buscando a "+nombre+" en WhatsApp...",0,true);
+        new Thread(()->{
+            String tel = buscarTelefono(nombre);
+            mainHandler.post(()->{
+                if (tel != null) {
+                    showBubble("💬 Abriendo WhatsApp con "+nombre+"...",3000,true);
+                    try {
+                        // Limpiar el número (quitar +52 o código de país si es necesario para WA)
+                        String numLimpio = tel.replaceAll("[^0-9]","");
+                        // Agregar código de país México si no lo tiene
+                        if (!numLimpio.startsWith("52") && numLimpio.length() == 10) {
+                            numLimpio = "52" + numLimpio;
+                        }
+                        Intent wa = new Intent(Intent.ACTION_VIEW);
+                        wa.setData(Uri.parse("https://api.whatsapp.com/send?phone=" + numLimpio));
+                        wa.setPackage("com.whatsapp");
+                        wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(wa);
+                    } catch (Exception e) {
+                        // WhatsApp no instalado, intentar con WhatsApp Business
+                        try {
+                            String numLimpio = tel.replaceAll("[^0-9]","");
+                            if (!numLimpio.startsWith("52") && numLimpio.length()==10) numLimpio="52"+numLimpio;
+                            Intent wa=new Intent(Intent.ACTION_VIEW);
+                            wa.setData(Uri.parse("https://api.whatsapp.com/send?phone="+numLimpio));
+                            wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(wa);
+                        } catch (Exception e2) {
+                            showBubble("⚠️ WhatsApp no está instalado",3000,true);
+                        }
+                    }
+                } else {
+                    showBubble("No encontré a "+nombre+" en tus contactos",3500,true);
+                }
+            });
+        }).start();
+    }
+ 
+    // ── Detectar app de música ────────────────────────────────────────────────
+    private String detectarAppMusica(String lower) {
+        if (lower.contains("spotify"))       return "spotify";
+        if (lower.contains("tidal"))         return "tidal";
+        if (lower.contains("qobuz"))         return "qobuz";
+        if (lower.contains("youtube music") || lower.contains("yt music")) return "youtube_music";
+        if (lower.contains("deezer"))        return "deezer";
+        if (lower.contains("apple music"))   return "apple_music";
+        if (lower.contains("soundcloud"))    return "soundcloud";
+        return "spotify"; // default
+    }
+ 
+    private void abrirAppMusica(String app) {
+        String paquete, nombre, uri;
+        switch (app) {
+            case "tidal":
+                paquete = "com.aspiro.tidal"; nombre = "Tidal"; uri = "tidal://"; break;
+            case "qobuz":
+                paquete = "com.qobuz.music"; nombre = "Qobuz"; uri = "qobuz://"; break;
+            case "youtube_music":
+                paquete = "com.google.android.apps.youtube.music"; nombre = "YouTube Music"; uri = ""; break;
+            case "deezer":
+                paquete = "deezer.android.app"; nombre = "Deezer"; uri = "deezer://"; break;
+            case "soundcloud":
+                paquete = "com.soundcloud.android"; nombre = "SoundCloud"; uri = "soundcloud://"; break;
+            default: // spotify
+                paquete = "com.spotify.music"; nombre = "Spotify"; uri = "spotify:"; break;
+        }
+ 
+        showBubble("🎵 Abriendo "+nombre+"...",3000,true);
+        try {
+            Intent i = getPackageManager().getLaunchIntentForPackage(paquete);
+            if (i != null) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+            } else {
+                // App no instalada → abrir Play Store
+                showBubble("📲 "+nombre+" no instalado, abriendo Play Store...",3000,true);
+                Intent store = new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + paquete));
+                store.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try { startActivity(store); } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            showBubble("No pude abrir "+nombre,3000,false);
+        }
+    }
+ 
+    // ── Abrir app por nombre general ──────────────────────────────────────────
+    private void abrirAppPorNombre(String nombre) {
+        // Mapa de nombres comunes a paquetes
+        Map<String,String> apps = new HashMap<>();
+        apps.put("spotify",       "com.spotify.music");
+        apps.put("whatsapp",      "com.whatsapp");
+        apps.put("instagram",     "com.instagram.android");
+        apps.put("facebook",      "com.facebook.katana");
+        apps.put("twitter",       "com.twitter.android");
+        apps.put("x",             "com.twitter.android");
+        apps.put("tiktok",        "com.zhiliaoapp.musically");
+        apps.put("youtube",       "com.google.android.youtube");
+        apps.put("maps",          "com.google.android.apps.maps");
+        apps.put("google maps",   "com.google.android.apps.maps");
+        apps.put("gmail",         "com.google.android.gm");
+        apps.put("chrome",        "com.android.chrome");
+        apps.put("netflix",       "com.netflix.mediaclient");
+        apps.put("uber",          "com.ubercab");
+        apps.put("rappi",         "com.grability.rappi");
+        apps.put("camera",        "android.hardware.camera2");
+        apps.put("camara",        "android.hardware.camera2");
+        apps.put("calculadora",   "com.google.android.calculator");
+        apps.put("calculator",    "com.google.android.calculator");
+        apps.put("tidal",         "com.aspiro.tidal");
+        apps.put("deezer",        "deezer.android.app");
+ 
+        String paquete = apps.get(nombre.toLowerCase().trim());
+        if (paquete != null) {
+            showBubble("📱 Abriendo "+nombre+"...",2000,true);
+            Intent i = getPackageManager().getLaunchIntentForPackage(paquete);
+            if (i != null) { i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(i); }
+            else showBubble("No encontré la app de "+nombre+" instalada",3000,true);
+        } else {
+            // No está en el mapa → mandar a Claude para que responda
+            askGroq("El usuario quiere abrir la app: " + nombre + ". Dile si puedes ayudarlo o no.");
+        }
+    }
+ 
+    // ── Buscar teléfono en contactos ─────────────────────────────────────────
     private String buscarTelefono(String nombre) {
         try{android.database.Cursor c=getContentResolver().query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
             new String[]{ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,ContactsContract.CommonDataKinds.Phone.NUMBER},null,null,null);
@@ -535,11 +733,17 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 JSONObject sys=new JSONObject();sys.put("role","system");
                 String nombre=animalTipo.equals("cat")?"Michi, un gatito gris IA":animalTipo.equals("dog")?"Guau, un perrito golden IA":"Quacky, un patito amarillo IA";
                 String sonido=animalTipo.equals("cat")?"¡Miau!":animalTipo.equals("dog")?"¡Guau!":"¡Quack!";
-                sys.put("content","Eres "+nombre+" que vive flotando en la pantalla. Puedes llamar a contactos con 'llama a [nombre]'. Eres simpático y divertido. Dices '"+sonido+"' de vez en cuando. Respuestas CORTAS (máximo 2-3 oraciones) en español mexicano.");
-                msgs.put(sys); for(JSONObject m:chatHistory)msgs.put(m);
+                sys.put("content","Eres "+nombre+" que vive flotando en la pantalla como asistente personal avanzado. " +
+                    "Puedes: llamar a contactos ('llama a [nombre]'), abrir WhatsApp ('whatsapp a [nombre]'), " +
+                    "abrir apps de música (Spotify, Tidal, Qobuz, etc.), abrir apps ('abre [app]'). " +
+                    "Eres simpático y divertido. Dices '"+sonido+"' de vez en cuando. " +
+                    "Respuestas CORTAS (máximo 2-3 oraciones) en español mexicano.");
+                msgs.put(sys);
+                for(JSONObject m:chatHistory)msgs.put(m);
                 JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",300);body.put("messages",msgs);
                 URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();
-                conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);
+                conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");
+                conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);
                 conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(30000);
                 try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}
                 StringBuilder sb=new StringBuilder();
@@ -574,7 +778,11 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
     private Notification buildNotification() {
         PendingIntent pi=PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE);
-        return new NotificationCompat.Builder(this,CHANNEL_ID).setContentTitle("🐾 Quacky activo").setContentText("Tócame · habla conmigo 🎤").setSmallIcon(android.R.drawable.ic_dialog_info).setContentIntent(pi).setOngoing(true).build();
+        return new NotificationCompat.Builder(this,CHANNEL_ID)
+            .setContentTitle("🐾 Quacky activo — 2x Power = escuchar")
+            .setContentText("Tócame · 2x botón encendido 🎤")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentIntent(pi).setOngoing(true).build();
     }
  
     private int dp(int val){return Math.round(val*getResources().getDisplayMetrics().density);}
@@ -583,11 +791,12 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     @Override
     public void onDestroy() {
         super.onDestroy();
-        if(sensorManager!=null)       sensorManager.unregisterListener(this);
-        if(animalView!=null)          try{wm.removeView(animalView);}catch(Exception ignored){}
-        if(bubbleCard!=null)          try{wm.removeView(bubbleCard);}catch(Exception ignored){}
-        if(footprintOverlay!=null)    try{wm.removeView(footprintOverlay);}catch(Exception ignored){}
-        if(voiceResultReceiver!=null) unregisterReceiver(voiceResultReceiver);
+        if(sensorManager!=null)         sensorManager.unregisterListener(this);
+        if(animalView!=null)            try{wm.removeView(animalView);}catch(Exception ignored){}
+        if(bubbleCard!=null)            try{wm.removeView(bubbleCard);}catch(Exception ignored){}
+        if(footprintOverlay!=null)      try{wm.removeView(footprintOverlay);}catch(Exception ignored){}
+        if(voiceResultReceiver!=null)   unregisterReceiver(voiceResultReceiver);
+        if(powerButtonReceiver!=null)   unregisterReceiver(powerButtonReceiver);
         if(tts!=null){tts.stop();tts.shutdown();}
         mainHandler.removeCallbacks(moveRunnable);
         walkHandler.removeCallbacks(walkAnim);
