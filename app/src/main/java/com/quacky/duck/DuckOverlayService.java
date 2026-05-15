@@ -30,11 +30,12 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private static final String GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions";
     private static final String GROQ_MODEL   = "llama-3.3-70b-versatile";
  
-    private static final int   DUCK_SIZE_DP = 9;
+    // ✅ Tamaño regresado a 18dp
+    private static final int   DUCK_SIZE_DP = 18;
     private static final float SPEED_BASE   = 0.011f;
     private static final float GYRO_FORCE   = 18f;
  
-    // Ventana del animal
+    // Ventana del animal (exactamente su tamaño, no bloquea toques)
     private View                       animalView;
     private WindowManager.LayoutParams animalParams;
  
@@ -103,6 +104,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             : WindowManager.LayoutParams.TYPE_PHONE;
  
+        // ✅ Lee el animal y voz en cada arranque (así refleja lo elegido en la app)
         SharedPreferences prefs = getSharedPreferences("quacky_prefs", MODE_PRIVATE);
         animalTipo = prefs.getString("animal", "duck");
  
@@ -134,8 +136,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
  
     // ─────────────────────────────────────────────────────────────────────────
     //  VENTANA DEL ANIMAL
-    //  ✅ FIX: usa getIdentifier() en lugar de R.drawable.cat/dog
-    //  Así compila SIEMPRE aunque las imágenes no estén aún en drawable/
+    //  ✅ Usa getIdentifier() — nunca falla en compilación aunque no exista la imagen
     // ─────────────────────────────────────────────────────────────────────────
     private void setupAnimalWindow() {
         int animalPx = dp(DUCK_SIZE_DP);
@@ -143,8 +144,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         switch (animalTipo) {
             case "cat": {
                 PetView pv = new PetView(this);
-                // getIdentifier() busca el drawable por nombre en tiempo de ejecución,
-                // NO en compilación — así nunca da error de compilación
+                // getIdentifier busca por nombre en tiempo de ejecución, NO en compilación
                 int resId = getResources().getIdentifier("cat", "drawable", getPackageName());
                 if (resId != 0) {
                     try {
@@ -567,9 +567,6 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         });
     }
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  NOTIFICATION
-    // ─────────────────────────────────────────────────────────────────────────
     private void createNotificationChannel() {
         if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.O){
             NotificationChannel ch=new NotificationChannel(CHANNEL_ID,"Quacky IA",NotificationManager.IMPORTANCE_LOW);
