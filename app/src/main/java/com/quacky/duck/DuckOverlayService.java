@@ -26,12 +26,12 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private static final String CHANNEL_ID = "quacky_channel";
  
     // ✅ Pon tu key de Groq aquí (gsk_...)
-    private static final String GROQ_API_KEY = "PEGA_TU_KEY_DE_GROQ_AQUI";
+    private static final String GROQ_API_KEY = "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";
     private static final String GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions";
     private static final String GROQ_MODEL   = "llama-3.3-70b-versatile";
  
     // ✅ Tamaño regresado a 18dp
-    private static final int   DUCK_SIZE_DP = 18;
+    private static final int DUCK_SIZE_DP = 40;
     private static final float SPEED_BASE   = 0.011f;
     private static final float GYRO_FORCE   = 18f;
  
