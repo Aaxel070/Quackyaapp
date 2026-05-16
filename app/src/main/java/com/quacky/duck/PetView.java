@@ -4,10 +4,6 @@ import android.content.Context;
 import android.graphics.*;
 import android.view.View;
  
-/**
- * Vista animada para gato y perro con animación de caminar.
- * Muestra el cuerpo del animal y anima 4 patas alternadas debajo.
- */
 public class PetView extends View {
  
     private Bitmap bitmap;
@@ -16,47 +12,59 @@ public class PetView extends View {
  
     private boolean isMoving  = false;
     private float   walkPhase = 0f;
-    private float   scaleXDir = 1f;
+    private float   dir       = 1f; // 1=derecha, -1=izquierda
  
-    // Color de las patas, muestreado del bitmap
-    private int colorPata      = 0xFF999999;
-    private int colorPataOscuro = 0xFF666666;
+    // Colores de patas (se calculan del bitmap)
+    private int colorPata  = 0xFFAA8844;
+    private int colorGarra = 0xFF886622;
+    private boolean coloresMuestreados = false;
  
     public PetView(Context context) {
         super(context);
         setBackgroundColor(Color.TRANSPARENT);
+        // Software layer para que Canvas funcione correctamente
         setLayerType(LAYER_TYPE_SOFTWARE, null);
     }
  
     public void setAnimalBitmap(Bitmap bmp) {
         this.bitmap = bmp;
-        if (bmp != null && !bmp.isRecycled()) {
-            // Muestrear color de pata desde la parte inferior del bitmap
-            try {
-                int cx = bmp.getWidth() / 2;
-                int cy = (int)(bmp.getHeight() * 0.88f);
-                colorPata = bmp.getPixel(cx, cy);
-                // Versión más oscura para la pezuña/garra
-                int r = Math.max(0, Color.red(colorPata)   - 40);
-                int g = Math.max(0, Color.green(colorPata) - 40);
-                int b = Math.max(0, Color.blue(colorPata)  - 40);
-                colorPataOscuro = Color.rgb(r, g, b);
-            } catch (Exception ignored) {}
-        }
+        coloresMuestreados = false;
         invalidate();
     }
  
-    /**
-     * Misma interfaz que DuckView.
-     * @param moving    ¿Se mueve?
-     * @param phase     Fase de caminar 0.0–1.0
-     * @param direction 1.0 = derecha, -1.0 = izquierda
-     */
+    /** Misma firma que DuckView.setWalkState */
     public void setWalkState(boolean moving, float phase, float direction) {
-        isMoving  = moving;
-        walkPhase = phase;
-        scaleXDir = direction >= 0 ? 1f : -1f;
+        this.isMoving  = moving;
+        this.walkPhase = phase;
+        this.dir       = direction >= 0 ? 1f : -1f;
         invalidate();
+    }
+ 
+    // Muestrea el color más representativo del animal para las patas
+    private void muestrearColores() {
+        if (bitmap == null || bitmap.isRecycled() || coloresMuestreados) return;
+        int bw = bitmap.getWidth(), bh = bitmap.getHeight();
+        // Buscar el píxel más opaco de la zona inferior del bitmap
+        int mejorAlpha = 0;
+        int mejorColor = 0xFFAA8844;
+        int[] ys = {(int)(bh*0.75f), (int)(bh*0.80f), (int)(bh*0.85f)};
+        int[] xs = {(int)(bw*0.25f), (int)(bw*0.40f), (int)(bw*0.50f), (int)(bw*0.60f), (int)(bw*0.75f)};
+        for (int y : ys) for (int x : xs) {
+            try {
+                int p = bitmap.getPixel(x, y);
+                if (Color.alpha(p) > mejorAlpha) {
+                    mejorAlpha = Color.alpha(p);
+                    mejorColor = Color.argb(255, Color.red(p), Color.green(p), Color.blue(p));
+                }
+            } catch (Exception ignored) {}
+        }
+        colorPata  = mejorColor;
+        // Versión más oscura para garras/pezuñas
+        colorGarra = Color.argb(255,
+            Math.max(0, Color.red(mejorColor)   - 50),
+            Math.max(0, Color.green(mejorColor) - 50),
+            Math.max(0, Color.blue(mejorColor)  - 50));
+        coloresMuestreados = true;
     }
  
     @Override
@@ -65,89 +73,76 @@ public class PetView extends View {
         int w = getWidth(), h = getHeight();
         if (w <= 0 || h <= 0) return;
  
+        muestrearColores();
+ 
         canvas.save();
  
-        // Voltear según dirección
-        if (scaleXDir < 0) canvas.scale(-1f, 1f, w / 2f, h / 2f);
+        // Voltear según dirección de movimiento
+        if (dir < 0) canvas.scale(-1f, 1f, w / 2f, h / 2f);
  
         if (isMoving) {
-            // ── CAMINAR ───────────────────────────────────────────────────
-            // Cuerpo ocupa 78% de la altura, dejando espacio para patas abajo
-            float bodyH    = h * 0.78f;
-            float bodyY    = 0f;
+            // ─── ANIMACIÓN DE CAMINAR ────────────────────────────────────────
+            // El cuerpo ocupa el 78% superior; el 22% inferior son las patas
+            float bodyH = h * 0.78f;
  
-            // Bob (rebote vertical)
-            float bob = (float)(Math.sin(walkPhase * Math.PI * 2) * h * 0.028f);
-            // Lean (inclinación lateral al caminar)
-            float lean = (float)(Math.sin(walkPhase * Math.PI * 2) * 3.5f);
+            // Ciclo de caminar: seno para bob y lean
+            double ciclo = Math.sin(walkPhase * Math.PI * 2);
+            float bob  = (float)(ciclo * h * 0.030f);   // rebote vertical
+            float lean = (float)(ciclo * 4.0f);          // inclinación lateral
  
             canvas.translate(0, bob);
-            canvas.rotate(lean, w / 2f, h / 2f);
+            canvas.rotate(lean, w / 2f, h * 0.5f);
  
-            // Dibujar cuerpo
-            canvas.drawBitmap(bitmap, null, new RectF(w * 0.04f, bodyY, w * 0.96f, bodyH), paintImg);
+            // Dibujar cuerpo en 78% del alto
+            canvas.drawBitmap(bitmap, null, new RectF(0, 0, w, bodyH), paintImg);
  
-            // Dibujar 4 patas animadas
-            dibujarPatas(canvas, w, h, bodyH);
+            // ─── PATAS ANIMADAS ──────────────────────────────────────────────
+            // Cuadrúpedo: par diagonal A (delantera-izq + trasera-der) y par B opuesto
+            float faseA = walkPhase;
+            float faseB = (walkPhase + 0.5f) % 1f;
+ 
+            // Levantamiento máximo de cada par
+            float liftA = (float)(Math.max(0.0, Math.sin(faseA * Math.PI)) * h * 0.12f);
+            float liftB = (float)(Math.max(0.0, Math.sin(faseB * Math.PI)) * h * 0.12f);
+ 
+            float pw = w * 0.14f;   // ancho de pata
+            float ph = h * 0.18f;   // alto de pata
+            float baseY = bodyH;    // Y donde empiezan las patas
+ 
+            // Posiciones X de las 4 patas
+            float xDI = w * 0.18f;  // delantera izquierda  → par A
+            float xDD = w * 0.40f;  // delantera derecha     → par B
+            float xTI = w * 0.58f;  // trasera izquierda     → par B
+            float xTD = w * 0.80f;  // trasera derecha       → par A
+ 
+            dibujarPata(canvas, xDI, baseY, liftA, pw, ph);
+            dibujarPata(canvas, xDD, baseY, liftB, pw, ph);
+            dibujarPata(canvas, xTI, baseY, liftB, pw, ph);
+            dibujarPata(canvas, xTD, baseY, liftA, pw, ph);
  
         } else {
-            // ── PARADO ────────────────────────────────────────────────────
+            // ─── PARADO ──────────────────────────────────────────────────────
             canvas.drawBitmap(bitmap, null, new RectF(0, 0, w, h), paintImg);
         }
  
         canvas.restore();
     }
  
-    /**
-     * Dibuja 4 patas con ciclo de caminar alterno.
-     * Par A (delantera-izq + trasera-der) y Par B (delantera-der + trasera-izq)
-     * se mueven en oposición de fase (0.5 de diferencia), igual que un cuadrúpedo real.
-     */
-    private void dibujarPatas(Canvas canvas, int w, int h, float bodyH) {
-        float pataAncho = w * 0.09f;
-        float pataAlto  = h * 0.20f;
-        float pezunaR   = pataAncho * 0.65f;
- 
-        // Posiciones X de las 4 patas
-        float xDI = w * 0.18f; // delantera izquierda
-        float xDD = w * 0.38f; // delantera derecha
-        float xTI = w * 0.56f; // trasera izquierda
-        float xTD = w * 0.76f; // trasera derecha
- 
-        // Fases de cada pata (cuadrúpedo: diagonal pairs)
-        float faseDI = walkPhase;
-        float faseTD = walkPhase;             // par A: misma fase
-        float faseDD = (walkPhase + 0.5f) % 1f;
-        float faseTI = (walkPhase + 0.5f) % 1f; // par B: fase opuesta
- 
-        dibujarUnaPata(canvas, xDI, bodyH, faseDI, pataAncho, pataAlto, pezunaR, h);
-        dibujarUnaPata(canvas, xDD, bodyH, faseDD, pataAncho, pataAlto, pezunaR, h);
-        dibujarUnaPata(canvas, xTI, bodyH, faseTI, pataAncho, pataAlto, pezunaR, h);
-        dibujarUnaPata(canvas, xTD, bodyH, faseTD, pataAncho, pataAlto, pezunaR, h);
-    }
- 
-    private void dibujarUnaPata(Canvas canvas, float cx, float bodyH, float fase,
-                                 float pw, float ph, float pr, int viewH) {
-        // Levantamiento: la pata sube cuando sin(fase*PI) > 0
-        float lift = (float)(Math.max(0, Math.sin(fase * Math.PI)) * ph * 0.55f);
- 
-        float top = bodyH - lift;
+    private void dibujarPata(Canvas canvas, float cx, float baseY,
+                              float lift, float pw, float ph) {
+        float top = baseY - lift;
         float bot = top + ph;
  
         // Pierna (rectángulo redondeado)
         paintPata.setColor(colorPata);
         paintPata.setStyle(Paint.Style.FILL);
-        canvas.drawRoundRect(
-            new RectF(cx - pw / 2f, top, cx + pw / 2f, bot - pr),
-            pw / 3f, pw / 3f, paintPata
-        );
+        canvas.drawRoundRect(new RectF(cx - pw/2f, top, cx + pw/2f, bot - pw/2f),
+            pw/3f, pw/3f, paintPata);
  
-        // Pezuña / pata (óvalo en la punta)
-        paintPata.setColor(colorPataOscuro);
-        canvas.drawOval(
-            new RectF(cx - pr, bot - pr * 1.3f, cx + pr, bot + pr * 0.2f),
-            paintPata
-        );
+        // Pezuña/garra (óvalo en la punta)
+        paintPata.setColor(colorGarra);
+        canvas.drawOval(new RectF(cx - pw*0.65f, bot - pw*0.7f,
+            cx + pw*0.65f, bot + pw*0.15f), paintPata);
     }
 }
  
