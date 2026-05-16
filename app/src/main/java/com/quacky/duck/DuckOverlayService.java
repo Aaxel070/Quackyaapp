@@ -27,7 +27,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private static final String CHANNEL_ID = "quacky_channel";
  
     // ✅ Pon tu key de Groq aquí
-    private static final String GROQ_API_KEY = "PEGA_TU_KEY_DE_GROQ_AQUI";
+    private static final String GROQ_API_KEY = "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";
     private static final String GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions";
     private static final String GROQ_MODEL   = "llama-3.3-70b-versatile";
  
