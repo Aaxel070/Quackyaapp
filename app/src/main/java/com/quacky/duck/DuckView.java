@@ -1,241 +1,190 @@
 package com.quacky.duck;
-
+ 
 import android.content.Context;
 import android.graphics.*;
-import android.util.AttributeSet;
 import android.view.View;
-
+ 
 /**
- * Vista que dibuja un patito 3D tipo goma de baño (estilo de la foto)
- * con animación de pasos y efecto de "alzar" una pata.
+ * Vista animada del pato que usa sprite sheets reales.
+ *
+ * Recursos necesarios en res/drawable/:
+ *   duck_walk.png  — tira horizontal de 8 frames (125×125 c/u = 1000×125 total)
+ *   duck_idle.png  — tira horizontal de 4 frames  (125×125 c/u =  500×125 total)
+ *
+ * Uso (misma interfaz que antes):
+ *   duckView.setWalkState(moving, walkPhase, direction)
  */
 public class DuckView extends View {
-
-    // ── Estado de animación ───────────────────────────────────────────────────
-    private float walkPhase = 0f;   // 0..1 ciclo de caminar
-    private boolean isWalking = false;
-    private float facingScaleX = 1f; // 1 = derecha, -1 = izquierda
-
+ 
+    // ── Constantes de animación ───────────────────────────────────────────────
+    private static final int WALK_FRAMES = 8;   // frames en duck_walk.png
+    private static final int IDLE_FRAMES = 4;   // frames en duck_idle.png
+    private static final int FRAME_W     = 125; // ancho de cada frame en px
+    private static final int FRAME_H     = 125; // alto  de cada frame en px
+ 
+    // ── Bitmaps ───────────────────────────────────────────────────────────────
+    private Bitmap walkBitmap;   // tira de 8 frames de caminar
+    private Bitmap idleBitmap;   // tira de 4 frames de reposo
+ 
     // ── Pinturas ──────────────────────────────────────────────────────────────
-    private final Paint bodyPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint eyePaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint pupilPaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint beakPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint beakShadow  = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint wingPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint footPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint highlightP  = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-    public DuckView(Context ctx) { super(ctx); init(); }
-    public DuckView(Context ctx, AttributeSet a) { super(ctx, a); init(); }
-    public DuckView(Context ctx, AttributeSet a, int d) { super(ctx, a, d); init(); }
-
-    private void init() {
-        // Amarillo cuerpo
-        bodyPaint.setStyle(Paint.Style.FILL);
-        bodyPaint.setShadowLayer(10f, 3f, 5f, 0x55000000);
+    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+ 
+    // ── Estado ────────────────────────────────────────────────────────────────
+    private boolean isMoving  = false;
+    private float   walkPhase = 0f;    // 0.0 – 1.0 (avanza en setupWalkAnimation)
+    private float   direction = 1f;    // 1 = derecha, -1 = izquierda
+ 
+    // Para la animación idle (tiempo real, no walkPhase)
+    private long startTimeMs = System.currentTimeMillis();
+ 
+    // Rectángulos reutilizables para evitar allocations en onDraw
+    private final Rect    srcRect = new Rect();
+    private final RectF   dstRect = new RectF();
+    private final Matrix  matrix  = new Matrix();
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    public DuckView(Context context) {
+        super(context);
+        setBackgroundColor(Color.TRANSPARENT);
         setLayerType(LAYER_TYPE_SOFTWARE, null);
-
-        // Sombra elipse suelo
-        shadowPaint.setStyle(Paint.Style.FILL);
-        shadowPaint.setColor(0x40000000);
-
-        // Ojo blanco
-        eyePaint.setStyle(Paint.Style.FILL);
-        eyePaint.setColor(Color.WHITE);
-
-        // Pupila negra
-        pupilPaint.setStyle(Paint.Style.FILL);
-        pupilPaint.setColor(Color.BLACK);
-
-        // Pico naranja-café
-        beakPaint.setStyle(Paint.Style.FILL);
-
-        // Sombra pico
-        beakShadow.setStyle(Paint.Style.FILL);
-        beakShadow.setColor(0xFFB85C1A);
-
-        // Ala
-        wingPaint.setStyle(Paint.Style.FILL);
-
-        // Patas
-        footPaint.setStyle(Paint.Style.FILL);
-        footPaint.setStrokeCap(Paint.Cap.ROUND);
-
-        // Brillo
-        highlightP.setStyle(Paint.Style.FILL);
-        highlightP.setColor(0xAAFFFFDD);
+        cargarSprites(context);
     }
-
-    /** Llamar desde el servicio para actualizar animación */
-    public void setWalkState(boolean walking, float phase, float scaleX) {
-        this.isWalking = walking;
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Cargar sprites desde res/drawable/
+    // ─────────────────────────────────────────────────────────────────────────
+    private void cargarSprites(Context context) {
+        try {
+            int walkId = context.getResources().getIdentifier(
+                "duck_walk", "drawable", context.getPackageName());
+            int idleId  = context.getResources().getIdentifier(
+                "duck_idle", "drawable", context.getPackageName());
+ 
+            if (walkId != 0) {
+                walkBitmap = BitmapFactory.decodeResource(context.getResources(), walkId);
+            }
+            if (idleId != 0) {
+                idleBitmap = BitmapFactory.decodeResource(context.getResources(), idleId);
+            }
+        } catch (Exception ignored) {}
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Interfaz pública — misma firma que la versión anterior
+    // ─────────────────────────────────────────────────────────────────────────
+    public void setWalkState(boolean moving, float phase, float dir) {
+        this.isMoving  = moving;
         this.walkPhase = phase;
-        this.facingScaleX = scaleX;
+        this.direction = dir >= 0 ? 1f : -1f;
         invalidate();
     }
-
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Dibujado
+    // ─────────────────────────────────────────────────────────────────────────
     @Override
     protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
-        float w = getWidth();
-        float h = getHeight();
-        float cx = w / 2f;
-        float cy = h / 2f;
-
-        // Flip horizontal
+        int vw = getWidth();
+        int vh = getHeight();
+        if (vw <= 0 || vh <= 0) return;
+ 
+        Bitmap bitmap;
+        int    frameIndex;
+        int    totalFrames;
+ 
+        if (isMoving && walkBitmap != null && !walkBitmap.isRecycled()) {
+            // ── CAMINANDO: ciclar por 8 frames según walkPhase ────────────────
+            bitmap      = walkBitmap;
+            totalFrames = WALK_FRAMES;
+            frameIndex  = (int)(walkPhase * totalFrames) % totalFrames;
+ 
+        } else if (!isMoving && idleBitmap != null && !idleBitmap.isRecycled()) {
+            // ── IDLE: ciclar por 4 frames lentamente (cada 300ms) ─────────────
+            bitmap      = idleBitmap;
+            totalFrames = IDLE_FRAMES;
+            long elapsed = System.currentTimeMillis() - startTimeMs;
+            frameIndex  = (int)(elapsed / 300) % totalFrames;
+            // Repintar para mantener animación idle activa
+            postInvalidateDelayed(300);
+ 
+        } else {
+            // ── Sin sprites: dibujar fallback (pato simple en código) ─────────
+            dibujarPatoFallback(canvas, vw, vh);
+            return;
+        }
+ 
+        // Ancho del frame en el bitmap (puede diferir de FRAME_W si se escaló)
+        int bitmapFrameW = bitmap.getWidth() / totalFrames;
+ 
+        // Rectángulo fuente: frame actual en la tira
+        srcRect.set(
+            frameIndex * bitmapFrameW,
+            0,
+            (frameIndex + 1) * bitmapFrameW,
+            bitmap.getHeight()
+        );
+ 
         canvas.save();
-        canvas.scale(facingScaleX, 1f, cx, cy);
-
-        // Escala base
-        float scale = Math.min(w, h) / 130f;
-
-        // Elevación del cuerpo al caminar (bob)
-        float bob = isWalking ? (float)(-Math.abs(Math.sin(walkPhase * Math.PI * 2)) * 5f * scale) : 0f;
-
-        // ── Sombra en el suelo ────────────────────────────────────────────────
-        float shadowW = 44f * scale;
-        float shadowH = 12f * scale;
-        float shadowY = cy + 44f * scale + bob;
-        canvas.drawOval(cx - shadowW, shadowY - shadowH/2,
-                        cx + shadowW, shadowY + shadowH/2, shadowPaint);
-
-        // ── Patas ─────────────────────────────────────────────────────────────
-        drawLegs(canvas, cx, cy, scale, bob);
-
-        // ── Cuerpo principal ──────────────────────────────────────────────────
-        // Gradiente amarillo 3D
-        float bodyTop    = cy - 20f * scale + bob;
-        float bodyBottom = cy + 38f * scale + bob;
-        LinearGradient bodyGrad = new LinearGradient(
-            cx - 30f*scale, bodyTop,
-            cx + 30f*scale, bodyBottom,
-            new int[]{0xFFFFE84B, 0xFFFFCC00, 0xFFE6A800},
-            new float[]{0f, 0.6f, 1f},
-            Shader.TileMode.CLAMP
-        );
-        bodyPaint.setShader(bodyGrad);
-
-        RectF bodyOval = new RectF(
-            cx - 36f*scale, bodyTop,
-            cx + 36f*scale, bodyBottom
-        );
-        canvas.drawOval(bodyOval, bodyPaint);
-
-        // ── Cabeza ────────────────────────────────────────────────────────────
-        float headCX = cx + 8f*scale;
-        float headCY = cy - 28f*scale + bob;
-        float headR  = 24f*scale;
-
-        LinearGradient headGrad = new LinearGradient(
-            headCX - headR, headCY - headR,
-            headCX + headR, headCY + headR,
-            new int[]{0xFFFFEE55, 0xFFFFCC00, 0xFFE6A800},
-            new float[]{0f, 0.55f, 1f},
-            Shader.TileMode.CLAMP
-        );
-        bodyPaint.setShader(headGrad);
-        canvas.drawCircle(headCX, headCY, headR, bodyPaint);
-
-        // ── Ala ───────────────────────────────────────────────────────────────
-        float wingTilt = isWalking ? (float)(Math.sin(walkPhase * Math.PI * 2) * 8f) : 0f;
-        canvas.save();
-        canvas.rotate(wingTilt, cx - 10f*scale, cy + 5f*scale + bob);
-        LinearGradient wingGrad = new LinearGradient(
-            cx - 32f*scale, cy + bob,
-            cx + 5f*scale, cy + 28f*scale + bob,
-            new int[]{0xFFFFDD00, 0xFFE6A800},
-            null, Shader.TileMode.CLAMP
-        );
-        wingPaint.setShader(wingGrad);
-        RectF wingOval = new RectF(
-            cx - 34f*scale, cy - 5f*scale + bob,
-            cx + 2f*scale,  cy + 30f*scale + bob
-        );
-        canvas.drawOval(wingOval, wingPaint);
+ 
+        // Voltear horizontalmente si el pato va hacia la izquierda
+        if (direction < 0) {
+            canvas.scale(-1f, 1f, vw / 2f, vh / 2f);
+        }
+ 
+        // Dibujar el frame escalado al tamaño de la vista
+        dstRect.set(0, 0, vw, vh);
+        canvas.drawBitmap(bitmap, srcRect, dstRect, paint);
+ 
         canvas.restore();
-
-        // ── Pico ──────────────────────────────────────────────────────────────
-        float beakX = headCX + headR - 4f*scale;
-        float beakY = headCY + 2f*scale;
-        // Sombra pico
-        canvas.drawOval(beakX - 1f*scale, beakY + 2f*scale,
-                        beakX + 18f*scale, beakY + 10f*scale, beakShadow);
-        // Pico principal
-        LinearGradient beakGrad = new LinearGradient(
-            beakX, beakY - 4f*scale,
-            beakX, beakY + 8f*scale,
-            new int[]{0xFFFF8C00, 0xFFCC5500},
-            null, Shader.TileMode.CLAMP
-        );
-        beakPaint.setShader(beakGrad);
-        RectF beakOval = new RectF(beakX, beakY - 4f*scale,
-                                   beakX + 18f*scale, beakY + 8f*scale);
-        canvas.drawOval(beakOval, beakPaint);
-        // Línea media del pico
-        Paint beakLine = new Paint(Paint.ANTI_ALIAS_FLAG);
-        beakLine.setColor(0xFFAA4400);
-        beakLine.setStrokeWidth(1.5f*scale);
-        canvas.drawLine(beakX + 1f*scale, beakY + 2f*scale,
-                        beakX + 16f*scale, beakY + 2f*scale, beakLine);
-
-        // ── Ojo ───────────────────────────────────────────────────────────────
-        float eyeX = headCX + 8f*scale;
-        float eyeY = headCY - 4f*scale;
-        canvas.drawCircle(eyeX, eyeY, 7f*scale, eyePaint);
-        canvas.drawCircle(eyeX + 1.5f*scale, eyeY + 1f*scale, 4f*scale, pupilPaint);
-        // Brillo en ojo
-        highlightP.setColor(0xCCFFFFFF);
-        canvas.drawCircle(eyeX - 1f*scale, eyeY - 2f*scale, 2f*scale, highlightP);
-
-        // ── Brillo cuerpo ──────────────────────────────────────────────────────
-        highlightP.setColor(0x55FFFFFF);
-        canvas.drawOval(cx - 18f*scale, bodyTop + 4f*scale,
-                        cx + 10f*scale, bodyTop + 20f*scale, highlightP);
-        // Brillo cabeza
-        canvas.drawCircle(headCX - 8f*scale, headCY - 10f*scale, 7f*scale, highlightP);
-
-        canvas.restore(); // flip
     }
-
-    private void drawLegs(Canvas canvas, float cx, float cy, float scale, float bob) {
-        footPaint.setColor(0xFFCC5500);
-        footPaint.setStrokeWidth(4f*scale);
-        footPaint.setStyle(Paint.Style.STROKE);
-        footPaint.setStrokeCap(Paint.Cap.ROUND);
-
-        float baseY = cy + 38f*scale + bob;
-
-        // Fase de paso — una pata sube, la otra baja
-        float leftLift  = isWalking ? (float)(Math.max(0, Math.sin(walkPhase * Math.PI * 2)) * 8f * scale) : 0f;
-        float rightLift = isWalking ? (float)(Math.max(0, -Math.sin(walkPhase * Math.PI * 2)) * 8f * scale) : 0f;
-
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Fallback: si los sprites no cargaron, dibujar pato en código
+    // ─────────────────────────────────────────────────────────────────────────
+    private void dibujarPatoFallback(Canvas canvas, int w, int h) {
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+ 
+        // Cuerpo
+        p.setColor(0xFFFFDD00);
+        canvas.drawOval(new RectF(w*0.15f, h*0.35f, w*0.85f, h*0.85f), p);
+ 
+        // Cabeza
+        canvas.drawCircle(w*0.62f, h*0.28f, h*0.22f, p);
+ 
+        // Pico
+        p.setColor(0xFFFF8800);
+        canvas.drawOval(new RectF(w*0.80f, h*0.22f, w*1.0f, h*0.35f), p);
+ 
+        // Ojo
+        p.setColor(Color.BLACK);
+        canvas.drawCircle(w*0.70f, h*0.22f, h*0.04f, p);
+ 
         // Pata izquierda
-        float lx = cx - 12f*scale;
-        float ly = baseY - leftLift;
-        canvas.drawLine(lx, cy + 30f*scale + bob, lx, ly, footPaint);
-        drawFoot(canvas, lx, ly, scale);
-
+        p.setColor(0xFFFF8800);
+        canvas.drawRoundRect(new RectF(w*0.30f, h*0.78f, w*0.48f, h*0.95f), dp(4), dp(4), p);
+ 
         // Pata derecha
-        float rx = cx + 8f*scale;
-        float ry = baseY - rightLift;
-        canvas.drawLine(rx, cy + 30f*scale + bob, rx, ry, footPaint);
-        drawFoot(canvas, rx, ry, scale);
+        canvas.drawRoundRect(new RectF(w*0.55f, h*0.78f, w*0.73f, h*0.95f), dp(4), dp(4), p);
     }
-
-    private void drawFoot(Canvas canvas, float x, float y, float scale) {
-        footPaint.setStyle(Paint.Style.FILL);
-        // Tres dedos tipo palmípedo
-        Path foot = new Path();
-        foot.moveTo(x, y);
-        foot.lineTo(x - 9f*scale, y + 5f*scale);
-        foot.lineTo(x - 4f*scale, y + 8f*scale);
-        foot.lineTo(x + 1f*scale, y + 5f*scale);
-        foot.lineTo(x + 6f*scale, y + 8f*scale);
-        foot.lineTo(x + 10f*scale, y + 4f*scale);
-        foot.close();
-        canvas.drawPath(foot, footPaint);
-        footPaint.setStyle(Paint.Style.STROKE);
+ 
+    private int dp(int val) {
+        return Math.round(val * getResources().getDisplayMetrics().density);
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Limpiar memoria al destruir
+    // ─────────────────────────────────────────────────────────────────────────
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        if (walkBitmap != null && !walkBitmap.isRecycled()) {
+            walkBitmap.recycle();
+            walkBitmap = null;
+        }
+        if (idleBitmap != null && !idleBitmap.isRecycled()) {
+            idleBitmap.recycle();
+            idleBitmap = null;
+        }
     }
 }
+ 
