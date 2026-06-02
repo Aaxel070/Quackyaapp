@@ -562,4 +562,3 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         quackHandler.removeCallbacks(quackRunnable);
     }
 }
- 
