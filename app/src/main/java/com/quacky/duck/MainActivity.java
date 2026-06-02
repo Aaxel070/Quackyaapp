@@ -29,7 +29,7 @@ import java.util.*;
 public class MainActivity extends Activity {
  
     // ✅ Misma key que DuckOverlayService
-    private static final String GROQ_API_KEY = "PEGA_TU_KEY_DE_GROQ_AQUI";
+    private static final String GROQ_API_KEY = "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";
     private static final String GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions";
  
     private static final int PERM_REQUEST    = 101;
