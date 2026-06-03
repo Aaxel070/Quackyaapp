@@ -30,7 +30,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private static final String ACTION_ALIMENTAR = "com.quacky.duck.ALIMENTAR";
  
     // ✅ Pon tu key de Groq aquí
-    private static final String GROQ_API_KEY = "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";
+    private static final String GROQ_API_KEY = "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";
     private static final String GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions";
     private static final String GROQ_MODEL   = "llama-3.3-70b-versatile";
  
@@ -575,561 +575,303 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private void playRaw(short[]s,int sr,int d)throws Exception{AudioTrack t=new AudioTrack.Builder().setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()).setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sr).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build()).setBufferSizeInBytes(s.length*2).setTransferMode(AudioTrack.MODE_STATIC).build();t.write(s,0,s.length);t.play();Thread.sleep(d+80);t.stop();t.release();}
     private void animarSalto(){if(animalView!=null)animalView.animate().translationY(-10f).setDuration(130).withEndAction(()->animalView.animate().translationY(0).setDuration(130).start()).start();}
  
-    // ═════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════
     //  SISTEMA DE COMANDOS DE VOZ
-    //  Orden de detección: música → alarma → calendario → WhatsApp → SMS →
-    //  llamada → abrir app → Groq IA para todo lo demás
-    // ═════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════
     private boolean handleVoiceCommand(String texto) {
-        String lower = texto.toLowerCase().trim();
+        String lo = texto.toLowerCase().trim();
  
-        // ── VIDEO (va ANTES que música, "reproduce" aplica para ambos) ────
-        boolean esVideo = lower.contains("netflix") || lower.contains("prime video")
-            || lower.contains("amazon video") || lower.contains("disney")
-            || lower.contains("hbo") || lower.contains(" max ") || lower.endsWith(" max")
-            || lower.contains("vix") || lower.contains("paramount")
-            || lower.contains("apple tv") || lower.contains("claro video")
-            || lower.contains("mubi") || lower.contains("crunchyroll")
-            || (lower.contains("youtube") && !lower.contains("music") && !lower.contains("música") && !lower.contains("musica"))
-            || (lower.contains("película") || lower.contains("serie") || lower.contains("episodio")
-                || lower.contains("temporada") || lower.contains("documental") || lower.contains("anime"));
-        if (esVideo) { abrirAppVideo(texto); return true; }
+        // VIDEO (antes que música — "reproduce" aplica para ambos)
+        if (lo.contains("netflix")||lo.contains("prime video")||lo.contains("amazon prime")
+            ||lo.contains("disney")||lo.contains("hbo")||lo.contains("vix")
+            ||lo.contains("paramount")||lo.contains("crunchyroll")||lo.contains("apple tv")
+            ||(lo.contains("youtube")&&!lo.contains("music")&&!lo.contains("música"))
+            ||(lo.contains("película")||lo.contains("serie")||lo.contains("documental"))) {
+            abrirVideo(texto); return true;
+        }
  
-        // ── MÚSICA ────────────────────────────────────────────────────────
-        boolean esMusica = lower.contains("reproduce") || lower.contains("pon la canción")
-            || lower.contains("quiero escuchar") || lower.contains("ponme")
-            || lower.contains("pon música") || lower.contains("pon musica")
-            || lower.contains("abre spotify") || lower.contains("pon spotify")
-            || lower.contains("abre tidal") || lower.contains("abre youtube music")
-            || lower.contains("abre apple music") || lower.contains("pon música de")
-            || lower.contains("escucho");
-        if (esMusica) { pedirYReproducirCancion(texto); return true; }
+        // MÚSICA
+        if (lo.contains("reproduce")||lo.contains("pon la canción")||lo.contains("quiero escuchar")
+            ||lo.contains("ponme")||lo.contains("pon música")||lo.contains("pon musica")
+            ||lo.contains("abre spotify")||lo.contains("abre tidal")||lo.contains("escucho")
+            ||lo.contains("abre youtube music")||lo.contains("abre apple music")) {
+            abrirMusica(texto); return true;
+        }
  
-        // ── ALARMA ────────────────────────────────────────────────────────
-        if (lower.contains("alarma") || lower.contains("despiértame")
-                || lower.contains("despertador") || lower.contains("ponme alarma")
-                || lower.contains("pon alarma")) {
+        // ALARMA
+        if (lo.contains("alarma")||lo.contains("despiértame")||lo.contains("despertador")
+            ||lo.contains("pon alarma")||lo.contains("ponme alarma")) {
             parsearYPonerAlarma(texto); return true;
         }
  
-        // ── CALENDARIO ────────────────────────────────────────────────────
-        if (lower.contains("recuérdame") || lower.contains("recordame")
-                || lower.contains("cumpleaños de") || lower.contains("agenda")
-                || lower.contains("calendario") || lower.contains("anota")
-                || (lower.contains("agrega") && !lower.contains("contacto"))) {
+        // CALENDARIO
+        if (lo.contains("recuérdame")||lo.contains("recordame")||lo.contains("cumpleaños de")
+            ||lo.contains("agenda")||lo.contains("anota")
+            ||(lo.contains("agrega")&&!lo.contains("contacto"))) {
             parsearYAgregarCalendario(texto); return true;
         }
  
-        // ── LLAMADA WHATSAPP ──────────────────────────────────────────────
-        if ((lower.contains("whatsapp") || lower.contains("wsp") || lower.contains("wasap"))
-                && (lower.contains("llama") || lower.contains("videollamada"))) {
-            llamarPorWhatsApp(extraerContacto(lower, texto)); return true;
+        // LLAMADA WHATSAPP
+        if ((lo.contains("whatsapp")||lo.contains("wsp")||lo.contains("wasap"))
+            &&(lo.contains("llama")||lo.contains("videollamada"))) {
+            whatsappLlamar(contacto(lo,texto)); return true;
         }
  
-        // ── MENSAJE WHATSAPP ──────────────────────────────────────────────
-        if (lower.contains("whatsapp") || lower.contains("wsp") || lower.contains("wasap")
-                || lower.contains("manda un whats") || lower.contains("mándale")) {
-            String nombre  = extraerContacto(lower, texto);
-            String mensaje = extraerMensaje(lower, texto);
-            enviarPorWhatsApp(nombre, mensaje); return true;
+        // MENSAJE WHATSAPP
+        if (lo.contains("whatsapp")||lo.contains("wsp")||lo.contains("wasap")
+            ||lo.contains("mándale")||lo.contains("mandale")) {
+            whatsappMensaje(contacto(lo,texto), mensaje(lo,texto)); return true;
         }
  
-        // ── SMS (mensaje de texto normal) ─────────────────────────────────
-        if ((lower.contains("manda") || lower.contains("envía") || lower.contains("envia"))
-                && (lower.contains("mensaje") || lower.contains("sms") || lower.contains("texto"))
-                && !lower.contains("whatsapp")) {
-            String nombre  = extraerContacto(lower, texto);
-            String mensaje = extraerMensaje(lower, texto);
-            enviarSMS(nombre, mensaje); return true;
+        // SMS
+        if ((lo.contains("manda")||lo.contains("envía")||lo.contains("envia"))
+            &&(lo.contains("mensaje")||lo.contains("sms")||lo.contains("texto"))
+            &&!lo.contains("whatsapp")) {
+            enviarSMS(contacto(lo,texto), mensaje(lo,texto)); return true;
         }
  
-        // ── LLAMADA NORMAL ────────────────────────────────────────────────
-        for (String p : new String[]{"llama a ","llámale a ","marcale a ","marca a ","llamar a ","marcar a "}) {
-            if (lower.contains(p) && !lower.contains("whatsapp") && !lower.contains("wsp")) {
-                buscarYLlamar(limpiarFin(texto.substring(lower.indexOf(p)+p.length()))); return true;
+        // LLAMADA NORMAL
+        for (String p : new String[]{"llama a ","llámale a ","marcale a ","marca a ","llamar a "}) {
+            if (lo.contains(p)&&!lo.contains("whatsapp")&&!lo.contains("wsp")) {
+                llamar(limpiar(texto.substring(lo.indexOf(p)+p.length()))); return true;
             }
         }
  
-        // ── ABRIR APP ─────────────────────────────────────────────────────
-        if (lower.startsWith("abre ") || lower.startsWith("abrir ")
-                || lower.contains("abre la ") || lower.contains("abre el ")) {
-            String app = lower.replace("abre la app de","").replace("abre la app","")
-                .replace("abre el ","").replace("abre la ","").replace("abrir la ","")
-                .replace("abre ","").replace("abrir ","").trim();
-            abrirAppDinamica(app); return true;
+        // ABRIR APP
+        if (lo.startsWith("abre ")||lo.startsWith("abrir ")||lo.contains("abre la ")) {
+            String app = lo.replace("abre la app de","").replace("abre la ","")
+                .replace("abrir la ","").replace("abre ","").replace("abrir ","").trim();
+            abrirApp(app); return true;
         }
  
-        return false; // → Groq maneja el resto
+        return false;
     }
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  MÚSICA — detecta app y canción por separado
-    // ─────────────────────────────────────────────────────────────────────────
-    private void pedirYReproducirCancion(String texto) {
-        String lower = texto.toLowerCase();
- 
+    // ───────────────────────────────────────────────────────────────────────
+    //  MÚSICA
+    // ───────────────────────────────────────────────────────────────────────
+    private void abrirMusica(String texto) {
+        String lo = texto.toLowerCase();
         // 1. Detectar app
-        String app = detectarAppMusica(lower);
+        String pkg, appNombre, uriBase;
+        if      (lo.contains("tidal"))   { pkg="com.aspiro.tidal"; appNombre="Tidal"; uriBase=""; }
+        else if (lo.contains("youtube music")||lo.contains("yt music")) { pkg="com.google.android.apps.youtube.music"; appNombre="YouTube Music"; uriBase=""; }
+        else if (lo.contains("apple music")) { pkg="com.apple.android.music"; appNombre="Apple Music"; uriBase=""; }
+        else if (lo.contains("deezer")) { pkg="deezer.android.app"; appNombre="Deezer"; uriBase=""; }
+        else if (lo.contains("amazon music")) { pkg="com.amazon.mp3"; appNombre="Amazon Music"; uriBase=""; }
+        else { pkg="com.spotify.music"; appNombre="Spotify"; uriBase="spotify:"; }
  
-        // 2. Extraer nombre de canción/artista quitando TODOS los keywords
-        String cancion = lower
-            .replace("reproduce","").replace("pon la canción","").replace("pon la cancion","")
-            .replace("quiero escuchar","").replace("ponme","").replace("pon música","")
-            .replace("pon musica","").replace("pon música de","").replace("pon musica de","")
-            // quitar nombre de app
-            .replace("en spotify","").replace("spotify","")
-            .replace("en tidal","").replace("tidal","")
-            .replace("en youtube music","").replace("youtube music","").replace("yt music","")
+        // 2. Extraer canción
+        String cancion = lo.replace("reproduce","").replace("pon la canción","")
+            .replace("quiero escuchar","").replace("ponme","").replace("pon música de","")
+            .replace("pon musica de","").replace("pon música","").replace("pon musica","")
+            .replace("en spotify","").replace("spotify","").replace("en tidal","").replace("tidal","")
+            .replace("en youtube music","").replace("youtube music","")
             .replace("en apple music","").replace("apple music","")
-            .replace("en youtube","").replace("youtube","")
             .replace("en deezer","").replace("deezer","")
             .replace("en amazon music","").replace("amazon music","")
-            .replace("música","").replace("musica","")
-            .replace("por favor","")
-            .replaceAll("\\s+"," ").trim();
+            .replace("música","").replace("musica","").replace("escucho","")
+            .replace("por favor","").replaceAll("\\s+"," ").trim();
+        if (cancion.length() < 2) cancion = null;
  
-        if (cancion.isEmpty() || cancion.length() < 2) cancion = null;
+        showBubble(cancion!=null ? "🎵 Buscando \""+cancion+"\" en "+appNombre+"..." : "🎵 Abriendo "+appNombre+"...", 3000, true);
  
-        // 3. Guardar preferencia de app
-        if (!app.equals("spotify") || lower.contains("spotify")) {
-            getSharedPreferences("quacky_prefs",MODE_PRIVATE).edit()
-                .putString("app_musica",app).apply();
-        } else {
-            String guardada = getSharedPreferences("quacky_prefs",MODE_PRIVATE)
-                .getString("app_musica","spotify");
-            app = guardada;
+        // 3. Intentar abrir con URI scheme de Spotify
+        if (pkg.equals("com.spotify.music") && cancion != null) {
+            if (lanzarUri("spotify:search:"+Uri.encode(cancion))) return;
         }
  
-        abrirAppMusica(app, cancion);
+        // 4. Abrir app directo por paquete (necesita QUERY_ALL_PACKAGES en manifest)
+        if (lanzarPaquete(pkg)) return;
+ 
+        // 5. Fallback: URL web (se abre en browser o en la app si tiene App Links)
+        String url = pkg.equals("com.spotify.music")
+            ? (cancion!=null ? "https://open.spotify.com/search/"+Uri.encode(cancion) : "https://open.spotify.com/")
+            : "https://play.google.com/store/apps/details?id="+pkg;
+        lanzarUrl(url);
     }
  
-    private String detectarAppMusica(String l) {
-        if (l.contains("tidal"))                       return "tidal";
-        if (l.contains("qobuz"))                       return "qobuz";
-        if (l.contains("youtube music")||l.contains("yt music")) return "youtube_music";
-        if (l.contains("youtube"))                     return "youtube_music";
-        if (l.contains("apple music"))                 return "apple_music";
-        if (l.contains("deezer"))                      return "deezer";
-        if (l.contains("amazon music"))                return "amazon_music";
-        return "spotify";
-    }
+    // ───────────────────────────────────────────────────────────────────────
+    //  VIDEO
+    // ───────────────────────────────────────────────────────────────────────
+    private void abrirVideo(String texto) {
+        String lo = texto.toLowerCase();
  
-    private void abrirAppMusica(String app, String cancion) {
-        String paquete, nombre;
-        switch (app) {
-            case "tidal":         paquete="com.aspiro.tidal";                         nombre="Tidal";         break;
-            case "qobuz":         paquete="com.qobuz.music";                          nombre="Qobuz";         break;
-            case "youtube_music": paquete="com.google.android.apps.youtube.music";    nombre="YouTube Music"; break;
-            case "apple_music":   paquete="com.apple.android.music";                  nombre="Apple Music";   break;
-            case "deezer":        paquete="deezer.android.app";                       nombre="Deezer";        break;
-            case "amazon_music":  paquete="com.amazon.mp3";                           nombre="Amazon Music";  break;
-            default:              paquete="com.spotify.music";                        nombre="Spotify";       break;
+        String pkg, appNombre;
+        if      (lo.contains("netflix"))            { pkg="com.netflix.mediaclient";              appNombre="Netflix"; }
+        else if (lo.contains("prime")||lo.contains("amazon")) { pkg="com.amazon.avod.thirdpartyclient"; appNombre="Prime Video"; }
+        else if (lo.contains("disney"))             { pkg="com.disney.disneyplus";                appNombre="Disney+"; }
+        else if (lo.contains("hbo")||lo.contains("max ")) { pkg="com.hbo.hbonow";                appNombre="Max/HBO"; }
+        else if (lo.contains("vix"))                { pkg="tv.vixx.android";                      appNombre="Vix"; }
+        else if (lo.contains("paramount"))          { pkg="com.cbs.app";                          appNombre="Paramount+"; }
+        else if (lo.contains("crunchyroll"))        { pkg="com.crunchyroll.crunchyroid";          appNombre="Crunchyroll"; }
+        else if (lo.contains("apple tv"))           { pkg="com.apple.atve.androidtv.appletv";    appNombre="Apple TV+"; }
+        else                                        { pkg="com.google.android.youtube";           appNombre="YouTube"; }
+ 
+        // Extraer título buscado
+        String titulo = lo.replace("reproduce","").replace("pon la película","")
+            .replace("quiero ver","").replace("ponme","").replace("pon","")
+            .replace("la película","").replace("la serie","").replace("el documental","")
+            .replace("en netflix","").replace("netflix","")
+            .replace("en prime video","").replace("prime video","").replace("amazon prime","")
+            .replace("en disney","").replace("disney plus","").replace("disney+","").replace("disney","")
+            .replace("en hbo","").replace("hbo max","").replace("en max","")
+            .replace("en vix","").replace("vix","")
+            .replace("en youtube","").replace("youtube","")
+            .replace("crunchyroll","").replace("paramount","")
+            .replace("por favor","").replaceAll("\\s+"," ").trim();
+        if (titulo.length() < 2) titulo = null;
+ 
+        showBubble(titulo!=null ? "🎬 Buscando \""+titulo+"\" en "+appNombre+"..." : "📺 Abriendo "+appNombre+"...", 3000, true);
+ 
+        // YouTube: URI scheme nativo
+        if (pkg.equals("com.google.android.youtube") && titulo != null) {
+            if (lanzarUri("vnd.youtube://results?search_query="+Uri.encode(titulo))) return;
+            if (lanzarUrl("https://www.youtube.com/results?search_query="+Uri.encode(titulo))) return;
         }
  
-        String msg = (cancion!=null&&!cancion.isEmpty())
-            ? "🎵 Buscando \""+cancion+"\" en "+nombre+"..."
-            : "🎵 Abriendo "+nombre+"...";
-        showBubble(msg, 4000, true);
+        // Resto: abrir por paquete (necesita QUERY_ALL_PACKAGES)
+        if (lanzarPaquete(pkg)) return;
  
-        // Paso 1: intentar abrir directamente por paquete
-        try {
-            Intent i = getPackageManager().getLaunchIntentForPackage(paquete);
-            if (i != null) {
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(i);
-                // Si hay canción, buscarla aparte con 500ms de delay (app tarda en abrir)
-                if (cancion != null && !cancion.isEmpty()) {
-                    final String buscar = cancion;
-                    final String appNom = app;
-                    mainHandler.postDelayed(() -> buscarEnApp(appNom, buscar), 1500);
-                }
-                return;
-            }
-        } catch (Exception ignored) {}
- 
-        // Paso 2: intentar con URI scheme del app
-        try {
-            String uri = null;
-            if (app.equals("spotify") && cancion!=null && !cancion.isEmpty())
-                uri = "spotify:search:" + Uri.encode(cancion);
-            else if (app.equals("spotify"))
-                uri = "spotify:";
-            if (uri != null) {
-                Intent i2 = new Intent(Intent.ACTION_VIEW, Uri.parse(uri));
-                i2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(i2);
-                return;
-            }
-        } catch (Exception ignored) {}
- 
-        // Paso 3: app no instalada → Play Store
-        showBubble(nombre+" no está instalado 😔\nTe abro la Play Store para instalarlo", 5000, true);
-        try {
-            Intent store = new Intent(Intent.ACTION_VIEW,
-                Uri.parse("https://play.google.com/store/apps/details?id="+paquete));
-            store.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(store);
-        } catch (Exception ignored) {}
+        // Fallback: búsqueda web o Play Store
+        String url = appNombre.equals("YouTube") && titulo!=null
+            ? "https://www.youtube.com/results?search_query="+Uri.encode(titulo)
+            : "https://play.google.com/store/apps/details?id="+pkg;
+        if (!lanzarUrl(url)) {
+            showBubble(appNombre+" no está instalado — te abro Play Store 📲", 4000, true);
+        }
     }
  
-    /** Después de abrir la app, buscar la canción/artista */
-    private void buscarEnApp(String app, String cancion) {
-        try {
-            Intent search = null;
-            switch (app) {
-                case "spotify":
-                    search = new Intent(Intent.ACTION_VIEW,
-                        Uri.parse("spotify:search:" + Uri.encode(cancion)));
-                    break;
-                case "youtube_music":
-                    search = new Intent(Intent.ACTION_VIEW,
-                        Uri.parse("https://music.youtube.com/search?q=" + Uri.encode(cancion)));
-                    search.setPackage("com.google.android.apps.youtube.music");
-                    break;
-                default:
-                    return;
-            }
-            if (search != null) {
-                search.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(search);
-            }
-        } catch (Exception ignored) {}
-    }
- 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  LLAMADAS
-    // ─────────────────────────────────────────────────────────────────────────
-    private void buscarYLlamar(String nombre) {
-        if (nombre.isEmpty()) { showBubble("¿A quién quieres llamar? 📞",3000,true); return; }
-        showBubble("📞 Buscando a " + nombre + "...", 0, true);
-        new Thread(() -> {
+    // ───────────────────────────────────────────────────────────────────────
+    //  WHATSAPP — usa URI scheme "whatsapp://" que no necesita permiso extra
+    // ───────────────────────────────────────────────────────────────────────
+    private void whatsappMensaje(String nombre, String msg) {
+        if (nombre.isEmpty()) { showBubble("¿A quién le mando el WhatsApp? 💬",3000,true); return; }
+        showBubble("🔍 Buscando a "+nombre+"...", 0, true);
+        new Thread(()->{
             String tel = buscarTelefono(nombre);
-            mainHandler.post(() -> {
-                if (tel != null) {
-                    showBubble("📞 Llamando a " + nombre + "...", 4000, true);
-                    try {
-                        Intent l = new Intent(Intent.ACTION_CALL);
-                        l.setData(Uri.parse("tel:" + tel));
-                        l.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        startActivity(l);
-                    } catch (SecurityException e) {
-                        // Sin permiso → usar DIAL (abre el marcador)
-                        try {
-                            Intent d = new Intent(Intent.ACTION_DIAL);
-                            d.setData(Uri.parse("tel:" + tel));
-                            d.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                            startActivity(d);
-                        } catch (Exception ex) {
-                            showBubble("No pude marcar — ve a Permisos en la app 📱", 4000, true);
-                        }
-                    }
-                } else {
-                    showBubble("No encontré a " + nombre + " en tus contactos 😔", 3500, true);
-                }
-            });
-        }).start();
-    }
- 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  WHATSAPP
-    // ─────────────────────────────────────────────────────────────────────────
-    private void enviarPorWhatsApp(String nombre, String mensaje) {
-        if (nombre.isEmpty()) { showBubble("¿A quién le mando el WhatsApp?",3000,true); return; }
-        showBubble("🔍 Buscando a " + nombre + "...", 0, true);
-        new Thread(() -> {
-            String tel = buscarTelefono(nombre);
-            mainHandler.post(() -> {
-                if (tel != null) {
+            mainHandler.post(()->{
+                if (tel!=null) {
                     String num = tel.replaceAll("[^0-9]","");
-                    if (!num.startsWith("52") && num.length()==10) num = "52"+num;
-                    String url = "https://wa.me/"+num + (mensaje.isEmpty() ? "" : "?text="+Uri.encode(mensaje));
-                    String display = mensaje.isEmpty()
+                    if (!num.startsWith("52")&&num.length()==10) num="52"+num;
+                    // whatsapp:// URI scheme → abre WhatsApp directamente SIN setPackage
+                    String uri = "whatsapp://send?phone="+num+(msg.isEmpty()?"":"&text="+Uri.encode(msg));
+                    showBubble(msg.isEmpty()
                         ? "💬 Abriendo chat de "+nombre+" en WhatsApp..."
-                        : "💬 Enviando a "+nombre+": \""+mensaje+"\"";
-                    showBubble(display + (mensaje.isEmpty() ? "" : "\n(El mensaje ya está escrito, solo presiona Enviar 📨)"), 5000, true);
-                    try {
-                        Intent wa = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                        wa.setPackage("com.whatsapp");
-                        wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        startActivity(wa);
-                    } catch (Exception e) {
-                        try {
-                            // WhatsApp Business
-                            Intent wa2 = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                            wa2.setPackage("com.whatsapp.w4b");
-                            wa2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                            startActivity(wa2);
-                        } catch (Exception e2) {
-                            showBubble("WhatsApp no está instalado 📱", 3000, true);
-                        }
+                        : "💬 Enviando a "+nombre+": \""+msg+"\"", 5000, true);
+                    if (!lanzarUri(uri)) {
+                        // Fallback: wa.me URL
+                        lanzarUrl("https://wa.me/"+num+(msg.isEmpty()?"":"?text="+Uri.encode(msg)));
                     }
                 } else {
-                    showBubble("No encontré a " + nombre + " en tus contactos 😔", 3500, true);
+                    showBubble("No encontré a "+nombre+" en tus contactos 😔", 3500, true);
                 }
             });
         }).start();
     }
  
-    private void llamarPorWhatsApp(String nombre) {
+    private void whatsappLlamar(String nombre) {
         if (nombre.isEmpty()) { showBubble("¿A quién llamo por WhatsApp? 📱",3000,true); return; }
-        showBubble("📱 Buscando a " + nombre + "...", 0, true);
-        new Thread(() -> {
+        showBubble("🔍 Buscando a "+nombre+"...", 0, true);
+        new Thread(()->{
             String tel = buscarTelefono(nombre);
-            mainHandler.post(() -> {
-                if (tel != null) {
+            mainHandler.post(()->{
+                if (tel!=null) {
                     String num = tel.replaceAll("[^0-9]","");
-                    if (!num.startsWith("52") && num.length()==10) num = "52"+num;
+                    if (!num.startsWith("52")&&num.length()==10) num="52"+num;
                     showBubble("📱 Llamando a "+nombre+" por WhatsApp...", 4000, true);
-                    try {
-                        Intent wa = new Intent(Intent.ACTION_VIEW,
-                            Uri.parse("whatsapp://call?number=+" + num));
-                        wa.setPackage("com.whatsapp");
-                        wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        startActivity(wa);
-                    } catch (Exception e) {
-                        // Fallback: abrir chat y decirle que llame
-                        enviarPorWhatsApp(nombre, "");
-                        showBubble("Abrí el chat — toca el ícono de llamada 📞", 5000, true);
-                    }
+                    // Intentar videollamada, si falla → abrir chat
+                    if (!lanzarUri("whatsapp://call?phone="+num))
+                        lanzarUrl("https://wa.me/"+num);
                 } else {
-                    showBubble("No encontré a "+nombre+" en contactos 😔", 3500, true);
+                    showBubble("No encontré a "+nombre+" 😔", 3500, true);
                 }
             });
         }).start();
     }
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  SMS
-    // ─────────────────────────────────────────────────────────────────────────
-    private void enviarSMS(String nombre, String mensaje) {
-        if (nombre.isEmpty()) { showBubble("¿A quién le mando el mensaje?",3000,true); return; }
-        showBubble("📱 Buscando a " + nombre + "...", 0, true);
-        new Thread(() -> {
+    // ───────────────────────────────────────────────────────────────────────
+    //  SMS Y LLAMADA NORMAL
+    // ───────────────────────────────────────────────────────────────────────
+    private void enviarSMS(String nombre, String msg) {
+        if (nombre.isEmpty()) { showBubble("¿A quién le mando el mensaje? ✉️",3000,true); return; }
+        showBubble("🔍 Buscando a "+nombre+"...", 0, true);
+        new Thread(()->{
             String tel = buscarTelefono(nombre);
-            mainHandler.post(() -> {
-                if (tel != null) {
+            mainHandler.post(()->{
+                if (tel!=null) {
                     showBubble("✉️ Abriendo mensaje para "+nombre+"...", 3000, true);
                     try {
-                        Intent sms = new Intent(Intent.ACTION_SENDTO);
-                        sms.setData(Uri.parse("smsto:" + tel));
-                        if (!mensaje.isEmpty()) sms.putExtra("sms_body", mensaje);
+                        Intent sms = new Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:"+tel));
+                        if (!msg.isEmpty()) sms.putExtra("sms_body", msg);
                         sms.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                         startActivity(sms);
                     } catch (Exception e) {
                         showBubble("No pude abrir la app de mensajes 😔", 3000, true);
                     }
-                } else {
-                    showBubble("No encontré a "+nombre+" en contactos 😔", 3500, true);
-                }
+                } else { showBubble("No encontré a "+nombre+" 😔", 3500, true); }
             });
         }).start();
     }
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  ALARMA
-    // ─────────────────────────────────────────────────────────────────────────
-    private void parsearYPonerAlarma(String texto) {
-        showBubble("⏰ Configurando alarma...", 0, true);
-        askGroqJSON(
-            "Extrae la hora del texto: \"" + texto + "\"\n"
-            + "Responde SOLO con JSON sin explicación: {\"hora\":NÚMERO,\"minutos\":NÚMERO,\"etiqueta\":\"TEXTO\"}\n"
-            + "Reglas: 'de la tarde/noche' suma 12 a hora si < 12. 'y media' = minutos 30. "
-            + "'al cuarto' = minutos 15. 'en punto' = minutos 0. Ejemplo: '7 y media de la mañana' → {\"hora\":7,\"minutos\":30}",
-            json -> {
-                try {
-                    int hora = json.getInt("hora");
-                    int min  = json.optInt("minutos", 0);
-                    String etiqueta = json.optString("etiqueta", "Quacky IA");
-                    Intent a = new Intent(AlarmClock.ACTION_SET_ALARM);
-                    a.putExtra(AlarmClock.EXTRA_HOUR,    hora);
-                    a.putExtra(AlarmClock.EXTRA_MINUTES, min);
-                    a.putExtra(AlarmClock.EXTRA_MESSAGE, etiqueta);
-                    a.putExtra(AlarmClock.EXTRA_SKIP_UI, false);
-                    a.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(a);
-                    showBubble("⏰ Alarma puesta a las " + hora + ":" + String.format("%02d",min), 5000, true);
-                } catch (Exception e) {
-                    showBubble("No entendí la hora — di algo como 'a las 7 de la mañana' ⏰", 4000, true);
-                }
-            });
-    }
- 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  CALENDARIO
-    // ─────────────────────────────────────────────────────────────────────────
-    private void parsearYAgregarCalendario(String texto) {
-        showBubble("📅 Agregando al calendario...", 0, true);
-        askGroqJSON(
-            "Extrae el evento del texto: \"" + texto + "\"\n"
-            + "Responde SOLO con JSON: {\"titulo\":\"TEXTO\",\"dia\":NÚMERO,\"mes\":NÚMERO,\"año\":NÚMERO,\"hora\":NÚMERO,\"minutos\":NÚMERO}\n"
-            + "Si no hay hora usa 9. Si no hay año usa el año actual. Mes en número (enero=1).",
-            json -> {
-                try {
-                    String tit = json.optString("titulo", "Evento");
-                    int d   = json.optInt("dia",  1);
-                    int mes = json.optInt("mes",  1);
-                    int año = json.optInt("año",  java.util.Calendar.getInstance().get(java.util.Calendar.YEAR));
-                    int h   = json.optInt("hora", 9);
-                    int min = json.optInt("minutos", 0);
-                    java.util.Calendar c = java.util.Calendar.getInstance();
-                    c.set(año, mes-1, d, h, min, 0);
-                    Intent ci = new Intent(Intent.ACTION_INSERT);
-                    ci.setData(CalendarContract.Events.CONTENT_URI);
-                    ci.putExtra(CalendarContract.Events.TITLE, tit);
-                    ci.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, c.getTimeInMillis());
-                    ci.putExtra(CalendarContract.EXTRA_EVENT_END_TIME,   c.getTimeInMillis()+3600000);
-                    ci.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(ci);
-                    showBubble("📅 Guardé: \""+tit+"\" el "+d+"/"+mes+"/"+año, 5000, true);
-                } catch (Exception e) {
-                    showBubble("No pude agregar al calendario — intenta con más detalle 📅", 4000, true);
-                }
-            });
-    }
- 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  ABRIR APP
-    // ─────────────────────────────────────────────────────────────────────────
- 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  VIDEO STREAMING — Netflix, YouTube, Prime Video, Disney+, Vix, etc.
-    // ─────────────────────────────────────────────────────────────────────────
-    private void abrirAppVideo(String texto) {
-        String lower = texto.toLowerCase();
-        // Detectar qué app de video quiere el usuario
-        String app = "youtube"; // default
-        if (lower.contains("netflix"))                       app = "netflix";
-        else if (lower.contains("prime video") || lower.contains("amazon video") || lower.contains("amazon prime")) app = "prime";
-        else if (lower.contains("disney"))                   app = "disney";
-        else if (lower.contains("hbo") || (lower.contains("max") && !lower.contains("amazon"))) app = "max";
-        else if (lower.contains("vix"))                      app = "vix";
-        else if (lower.contains("paramount"))                app = "paramount";
-        else if (lower.contains("apple tv"))                 app = "appletv";
-        else if (lower.contains("crunchyroll"))              app = "crunchyroll";
-        else if (lower.contains("mubi"))                     app = "mubi";
-        else if (lower.contains("claro video"))              app = "clarovideo";
- 
-        // Extraer título (quitando keywords)
-        String titulo = lower
-            .replace("reproduce","").replace("pon","").replace("ponme","")
-            .replace("quiero ver","").replace("pon la película","").replace("pon la serie","")
-            .replace("en netflix","").replace("netflix","")
-            .replace("en prime video","").replace("prime video","").replace("amazon prime","")
-            .replace("en disney","").replace("disney plus","").replace("disney+","").replace("disney","")
-            .replace("en hbo","").replace("hbo max","").replace("en max","").replace("max","")
-            .replace("en vix","").replace("vix","")
-            .replace("en youtube","").replace("youtube","")
-            .replace("en paramount","").replace("paramount","")
-            .replace("la película","").replace("la serie","").replace("el episodio","")
-            .replace("la temporada","").replace("por favor","")
-            .replaceAll("\\s+"," ").trim();
- 
-        if (titulo.length() < 2) titulo = null;
- 
-        // Nombres de apps y paquetes
-        String paquete, nombreApp;
-        switch (app) {
-            case "netflix":    paquete="com.netflix.mediaclient";                  nombreApp="Netflix";       break;
-            case "prime":      paquete="com.amazon.avod.thirdpartyclient";         nombreApp="Prime Video";   break;
-            case "disney":     paquete="com.disney.disneyplus";                    nombreApp="Disney+";       break;
-            case "max":        paquete="com.hbo.hbonow";                           nombreApp="Max/HBO";       break;
-            case "vix":        paquete="tv.vixx.android";                          nombreApp="Vix";           break;
-            case "paramount":  paquete="com.cbs.app";                              nombreApp="Paramount+";    break;
-            case "appletv":    paquete="com.apple.atve.androidtv.appletv";         nombreApp="Apple TV+";     break;
-            case "crunchyroll":paquete="com.crunchyroll.crunchyroid";              nombreApp="Crunchyroll";   break;
-            case "mubi":       paquete="com.mubi";                                 nombreApp="MUBI";          break;
-            case "clarovideo": paquete="com.clarovideo.clarovideo";               nombreApp="Claro Video";   break;
-            default:           paquete="com.google.android.youtube";              nombreApp="YouTube";       break;
-        }
- 
-        String msg = (titulo!=null)
-            ? "🎬 Buscando \""+titulo+"\" en "+nombreApp+"..."
-            : "📺 Abriendo "+nombreApp+"...";
-        showBubble(msg, 4000, true);
- 
-        // Paso 1: abrir por paquete
-        try {
-            Intent i = getPackageManager().getLaunchIntentForPackage(paquete);
-            if (i != null) {
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(i);
-                // Si hay título, buscar en YouTube (el único que soporta búsqueda fácil)
-                if (titulo != null && app.equals("youtube")) {
-                    final String q = titulo;
-                    mainHandler.postDelayed(() -> {
+    private void llamar(String nombre) {
+        if (nombre.isEmpty()) { showBubble("¿A quién quieres llamar? 📞",3000,true); return; }
+        showBubble("📞 Buscando a "+nombre+"...", 0, true);
+        new Thread(()->{
+            String tel = buscarTelefono(nombre);
+            mainHandler.post(()->{
+                if (tel!=null) {
+                    showBubble("📞 Llamando a "+nombre+"...", 4000, true);
+                    // Intentar ACTION_CALL, si falla → ACTION_DIAL (abre marcador)
+                    try {
+                        Intent call = new Intent(Intent.ACTION_CALL, Uri.parse("tel:"+tel));
+                        call.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(call);
+                    } catch (Exception e) {
                         try {
-                            Intent yt = new Intent(Intent.ACTION_SEARCH);
-                            yt.setPackage("com.google.android.youtube");
-                            yt.putExtra("query", q);
-                            yt.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                            startActivity(yt);
-                        } catch (Exception ignored) {}
-                    }, 1500);
-                }
-                return;
-            }
-        } catch (Exception ignored) {}
- 
-        // Paso 2: URI scheme para YouTube
-        if (app.equals("youtube") && titulo != null) {
-            try {
-                Intent yt = new Intent(Intent.ACTION_VIEW,
-                    Uri.parse("https://www.youtube.com/results?search_query="+Uri.encode(titulo)));
-                yt.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(yt);
-                return;
-            } catch (Exception ignored) {}
-        }
- 
-        // Paso 3: no instalada → Play Store
-        showBubble(nombreApp+" no está instalado 😔\nTe abro Play Store para instalarlo", 5000, true);
-        try {
-            Intent store = new Intent(Intent.ACTION_VIEW,
-                Uri.parse("https://play.google.com/store/apps/details?id="+paquete));
-            store.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(store);
-        } catch (Exception ignored) {}
+                            Intent dial = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:"+tel));
+                            dial.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(dial);
+                        } catch (Exception e2) {
+                            showBubble("No pude marcar — revisa permisos 📱", 3000, true);
+                        }
+                    }
+                } else { showBubble("No encontré a "+nombre+" 😔", 3500, true); }
+            });
+        }).start();
     }
  
-    private void abrirAppDinamica(String nombre) {
+    // ───────────────────────────────────────────────────────────────────────
+    //  ABRIR APP POR NOMBRE
+    // ───────────────────────────────────────────────────────────────────────
+    private void abrirApp(String nombre) {
         if (nombre.isEmpty()) return;
-        // Mapa de apps conocidas
         Map<String,String> mapa = new HashMap<>();
-        mapa.put("spotify","com.spotify.music");       mapa.put("whatsapp","com.whatsapp");
+        mapa.put("spotify","com.spotify.music"); mapa.put("whatsapp","com.whatsapp");
         mapa.put("instagram","com.instagram.android"); mapa.put("facebook","com.facebook.katana");
-        mapa.put("twitter","com.twitter.android");     mapa.put("x","com.twitter.android");
+        mapa.put("twitter","com.twitter.android"); mapa.put("x","com.twitter.android");
         mapa.put("tiktok","com.zhiliaoapp.musically"); mapa.put("youtube","com.google.android.youtube");
-        mapa.put("maps","com.google.android.apps.maps");mapa.put("gmail","com.google.android.gm");
-        mapa.put("chrome","com.android.chrome");       mapa.put("netflix","com.netflix.mediaclient");
-        mapa.put("uber","com.ubercab");                mapa.put("tidal","com.aspiro.tidal");
+        mapa.put("maps","com.google.android.apps.maps"); mapa.put("gmail","com.google.android.gm");
+        mapa.put("chrome","com.android.chrome"); mapa.put("netflix","com.netflix.mediaclient");
+        mapa.put("uber","com.ubercab"); mapa.put("tidal","com.aspiro.tidal");
         mapa.put("telegram","org.telegram.messenger"); mapa.put("snapchat","com.snapchat.android");
-        mapa.put("zoom","us.zoom.videomeetings");      mapa.put("apple music","com.apple.android.music");
+        mapa.put("zoom","us.zoom.videomeetings"); mapa.put("disney","com.disney.disneyplus");
+        mapa.put("prime video","com.amazon.avod.thirdpartyclient");
         mapa.put("youtube music","com.google.android.apps.youtube.music");
-        mapa.put("deezer","deezer.android.app");       mapa.put("amazon music","com.amazon.mp3");
-        mapa.put("calculadora","com.google.android.calculator");
-        mapa.put("camara","com.google.android.GoogleCamera");
-        mapa.put("cámara","com.google.android.GoogleCamera");
+        mapa.put("deezer","deezer.android.app"); mapa.put("amazon music","com.amazon.mp3");
  
-        String pkg = mapa.get(nombre.toLowerCase().trim());
-        if (pkg != null) {
-            try {
-                Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
-                if (i != null) {
-                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    showBubble("📱 Abriendo " + capitalize(nombre) + "...", 2000, true);
-                    startActivity(i); return;
-                }
-            } catch (Exception ignored) {}
-        }
-        // Búsqueda dinámica entre todas las apps instaladas
+        String buscar = nombre.toLowerCase().trim();
+        String pkg = mapa.get(buscar);
+ 
+        if (pkg != null && lanzarPaquete(pkg)) return;
+ 
+        // Búsqueda dinámica entre apps instaladas
         try {
             Intent main = new Intent(Intent.ACTION_MAIN);
             main.addCategory(Intent.CATEGORY_LAUNCHER);
-            List<ResolveInfo> apps = getPackageManager().queryIntentActivities(main, 0);
-            String buscar = nombre.toLowerCase().trim();
-            for (ResolveInfo app : apps) {
-                String label = app.loadLabel(getPackageManager()).toString().toLowerCase().trim();
-                if (label.contains(buscar) || buscar.contains(label)) {
+            for (ResolveInfo app : getPackageManager().queryIntentActivities(main,0)) {
+                String label = app.loadLabel(getPackageManager()).toString().toLowerCase();
+                if (label.contains(buscar)||buscar.contains(label)) {
                     Intent i = new Intent(Intent.ACTION_MAIN);
                     i.setComponent(new android.content.ComponentName(
                         app.activityInfo.packageName, app.activityInfo.name));
@@ -1139,77 +881,91 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 }
             }
         } catch (Exception ignored) {}
-        showBubble("No encontré la app \""+nombre+"\" — ¿está instalada? 📱", 3500, true);
+        showBubble("No encontré \""+nombre+"\" 📱", 3000, true);
     }
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  HELPERS de extracción de texto
-    // ─────────────────────────────────────────────────────────────────────────
-    /** Extrae el nombre del contacto de frases como "manda mensaje a Juan" */
-    private String extraerContacto(String lower, String texto) {
-        String[] prefijos = {
-            "whatsapp a ","wsp a ","wasap a ",
-            "manda whatsapp a ","mándale whatsapp a ","mándale un whatsapp a ",
-            "manda mensaje a ","envía mensaje a ","envia mensaje a ",
-            "manda un mensaje a ","envíale a ","enviale a ",
-            "llama a ","llámale a ","videollamada a ","mensaje a "
-        };
-        for (String p : prefijos) {
-            if (lower.contains(p)) {
-                int idx = lower.indexOf(p) + p.length();
+    // ───────────────────────────────────────────────────────────────────────
+    //  HELPERS — intents simplificados
+    // ───────────────────────────────────────────────────────────────────────
+    /** Lanza app por paquete. Devuelve true si tuvo éxito. */
+    private boolean lanzarPaquete(String paquete) {
+        try {
+            Intent i = getPackageManager().getLaunchIntentForPackage(paquete);
+            if (i != null) { i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(i); return true; }
+        } catch (Exception ignored) {}
+        return false;
+    }
+ 
+    /** Lanza URI scheme (spotify:, whatsapp://, vnd.youtube://, etc). Devuelve true si tuvo éxito. */
+    private boolean lanzarUri(String uri) {
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(uri));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i); return true;
+        } catch (Exception ignored) {}
+        return false;
+    }
+ 
+    /** Lanza URL https. Devuelve true si tuvo éxito. */
+    private boolean lanzarUrl(String url) {
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i); return true;
+        } catch (Exception ignored) {}
+        return false;
+    }
+ 
+    // ───────────────────────────────────────────────────────────────────────
+    //  HELPERS — extracción de texto
+    // ───────────────────────────────────────────────────────────────────────
+    private String contacto(String lo, String texto) {
+        String[] prefs = {"whatsapp a ","wsp a ","wasap a ","mándale un whatsapp a ",
+            "manda whatsapp a ","mándale whatsapp a ","manda mensaje a ","envía mensaje a ",
+            "manda un mensaje a ","envíale a ","llama a ","llámale a ","mensaje a "};
+        for (String p : prefs) {
+            if (lo.contains(p)) {
+                int idx = lo.indexOf(p)+p.length();
                 String n = texto.substring(idx).trim();
-                // Cortar donde empieza el mensaje
                 for (String c : new String[]{" diciéndole"," diciendo"," que le"," con el mensaje",
-                        " que diga"," un mensaje"," el mensaje"," para decirle"," saludando",
-                        " diciendo que"," por whatsapp"," por wsp"}) {
+                    " que diga"," un mensaje"," por whatsapp"," para decirle"}) {
                     int pos = n.toLowerCase().indexOf(c);
-                    if (pos > 0) { n = n.substring(0, pos); break; }
+                    if (pos > 0) { n = n.substring(0,pos); break; }
                 }
-                return limpiarFin(n);
+                return limpiar(n);
             }
         }
         return "";
     }
  
-    /** Extrae el contenido del mensaje */
-    private String extraerMensaje(String lower, String texto) {
-        for (String m : new String[]{"diciéndole ","que le diga ","con el mensaje ","diciendo ",
-                "diciendo que ","el mensaje ","para decirle ","que diga "}) {
-            if (lower.contains(m)) {
-                int idx = lower.indexOf(m) + m.length();
-                return limpiarFin(texto.substring(idx));
-            }
+    private String mensaje(String lo, String texto) {
+        for (String m : new String[]{"diciéndole ","que le diga ","con el mensaje ","diciendo ","que diga "}) {
+            if (lo.contains(m)) return limpiar(texto.substring(lo.indexOf(m)+m.length()));
         }
         return "";
     }
  
-    private String limpiarFin(String s) {
-        return s.replace(" por favor","").replace(" porfa","")
-                .replace(" gracias","").trim();
+    private String limpiar(String s) {
+        return s.replace(" por favor","").replace(" porfa","").replace(" gracias","").trim();
     }
  
-    /** Busca el teléfono de un contacto por nombre aproximado */
     private String buscarTelefono(String nombre) {
         try {
             android.database.Cursor c = getContentResolver().query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                 new String[]{ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-                             ContactsContract.CommonDataKinds.Phone.NUMBER},
-                null, null, null);
-            if (c == null) return null;
-            String buscar = nombre.toLowerCase().trim();
-            String mejor = null; int mejorP = 0;
+                             ContactsContract.CommonDataKinds.Phone.NUMBER}, null,null,null);
+            if (c==null) return null;
+            String buscar=nombre.toLowerCase().trim(), mejor=null; int mejorP=0;
             while (c.moveToNext()) {
-                String nc = c.getString(0), tel = c.getString(1);
+                String nc=c.getString(0), tel=c.getString(1);
                 if (nc==null||tel==null) continue;
-                String nl = nc.toLowerCase().trim();
+                String nl=nc.toLowerCase().trim();
                 if (nl.equals(buscar)) { c.close(); return tel.replaceAll("[^+0-9]",""); }
-                // Búsqueda por cualquier parte del nombre
-                int p = nl.contains(buscar)?3 : buscar.contains(nl)?2 : nl.startsWith(buscar.split(" ")[0])?1 : 0;
-                if (p > mejorP) { mejorP=p; mejor=tel.replaceAll("[^+0-9]",""); }
+                int p = nl.contains(buscar)?3 : buscar.contains(nl)?2 : nl.startsWith(buscar.split(" ")[0])?1:0;
+                if (p>mejorP) { mejorP=p; mejor=tel.replaceAll("[^+0-9]",""); }
             }
-            c.close();
-            return mejor;
+            c.close(); return mejor;
         } catch (Exception e) { return null; }
     }
  
