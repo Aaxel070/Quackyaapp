@@ -10,6 +10,7 @@ import android.media.*;
 import android.net.Uri;
 import android.os.*;
 import android.provider.*;
+import android.speech.*;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.Voice;
 import android.view.*;
@@ -31,36 +32,32 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     // ✅ Pon tu key de Groq aquí
     private static final String GROQ_API_KEY = "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";
     private static final String GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions";
-    private static final String GROQ_WHISPER = "https://api.groq.com/openai/v1/audio/transcriptions";
     private static final String GROQ_MODEL   = "llama-3.3-70b-versatile";
  
-    private static final int   DUCK_SIZE_DP   = 60;
-    private static final float SPEED_BASE     = 0.011f;
-    private static final float GYRO_FORCE     = 18f;
+    private static final int   DUCK_SIZE_DP = 60;
+    private static final float SPEED_BASE   = 0.011f;
+    private static final float GYRO_FORCE   = 18f;
  
-    // ── Sistema Tamagotchi: 3 estadísticas ───────────────────────────────────
-    // hambre:    0=lleno,  100=muerto de hambre  (sube 1%/18s → 100% en 30min)
-    // felicidad: 0=triste, 100=muy feliz         (baja 1%/10min si no interactúa)
-    // energia:   0=dormido,100=muy activo        (baja 1%/15min)
-    private int     hambreNivel   = 0;
-    private int     felicidad     = 70;
-    private int     energia       = 80;
-    private boolean estaComiendo  = false;
+    // ── Wake word — SpeechRecognizer en el main thread ───────────────────────
+    // ¿Por qué SpeechRecognizer en lugar de MediaRecorder+Whisper?
+    // - SpeechRecognizer sabemos que funciona (el toque ya lo usa)
+    // - No necesita internet propio (usa el reconocedor del sistema)
+    // - No tiene problemas de archivo/permisos de grabación
+    // - Más confiable en background como foreground service
+    private SpeechRecognizer wakeRecognizer;
+    private boolean          wakeActivo   = false;
+    private boolean          enComando    = false;
+    private String           nombreMascota = "";
  
+    // ── Hambre (Tamagotchi) ───────────────────────────────────────────────────
+    private int      hambreNivel   = 0;
+    private int      felicidad     = 70;
+    private int      energia       = 80;
+    private boolean  estaComiendo  = false;
     private Handler  hambreHandler = new Handler(Looper.getMainLooper());
     private Runnable hambreTick;
-    private Handler  statHandler   = new Handler(Looper.getMainLooper());
-    private Runnable statDecayTick;
     private Handler  quejaHandler  = new Handler(Looper.getMainLooper());
     private Runnable quejaRunnable;
- 
-    // ── Wake word via Groq Whisper ────────────────────────────────────────────
-    private MediaRecorder    mediaRecorder;
-    private File             wakeAudioFile;
-    private Thread           wakeThread;
-    private volatile boolean wakeActivo    = false;
-    private volatile boolean enComando     = false;
-    private String           nombreMascota = "";
  
     // Ventanas overlay
     private View                       animalView;
@@ -90,64 +87,61 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         float x,y; long born; boolean isLeft;
         Footprint(float x,float y,long born,boolean l){this.x=x;this.y=y;this.born=born;this.isLeft=l;}
     }
-    private final List<Footprint> footprints     = new ArrayList<>();
-    private static final long     FOOTPRINT_LIFE = 1800;
-    private long    lastFootprintTime = 0;
-    private boolean nextFootLeft      = true;
-    private float   lastFootX = -999, lastFootY = -999;
+    private final List<Footprint> footprints = new ArrayList<>();
+    private static final long FOOTPRINT_LIFE = 1800;
+    private long lastFootprintTime=0; boolean nextFootLeft=true; float lastFootX=-999,lastFootY=-999;
  
-    // Sonidos y animal
-    private Handler  quackHandler = new Handler(Looper.getMainLooper());
+    // Sonidos
+    private Handler  quackHandler=new Handler(Looper.getMainLooper());
     private Runnable quackRunnable;
-    private final Random rng       = new Random();
-    private String animalTipo      = "duck";
+    private final Random rng=new Random();
+    private String animalTipo="duck";
  
     // TTS
     private TextToSpeech tts;
-    private boolean      ttsListo = false;
+    private boolean      ttsListo=false;
  
     // Receptores
     private BroadcastReceiver voiceResultReceiver;
     private BroadcastReceiver escucharReceiver;
     private BroadcastReceiver alimentarReceiver;
  
-    private final List<JSONObject> chatHistory = new ArrayList<>();
-    private Handler  bubbleHandler = new Handler(Looper.getMainLooper());
+    private final List<JSONObject> chatHistory=new ArrayList<>();
+    private Handler  bubbleHandler=new Handler(Looper.getMainLooper());
     private Runnable bubbleHider;
  
     // Giroscopio
     private SensorManager  sensorManager;
     private Sensor         gyroSensor;
-    private volatile float gyroVelX = 0f, gyroVelY = 0f;
+    private volatile float gyroVelX=0f,gyroVelY=0f;
  
     @Override
-    public void onCreate() {
+    public void onCreate(){
         super.onCreate();
-        mainHandler = new Handler(Looper.getMainLooper());
+        mainHandler=new Handler(Looper.getMainLooper());
  
-        SharedPreferences prefs = getSharedPreferences("quacky_prefs", MODE_PRIVATE);
-        animalTipo    = prefs.getString("animal", "duck");
-        nombreMascota = prefs.getString("nombre_mascota", "").toLowerCase().trim();
+        SharedPreferences prefs=getSharedPreferences("quacky_prefs",MODE_PRIVATE);
+        animalTipo    =prefs.getString("animal","duck");
+        nombreMascota =prefs.getString("nombre_mascota","").toLowerCase().trim();
  
-        // Recuperar stats guardadas
-        long ultimaComida = prefs.getLong("ultima_comida", System.currentTimeMillis());
-        long minSin       = (System.currentTimeMillis() - ultimaComida) / 60000L;
-        hambreNivel = (int) Math.min(100, minSin * 100 / 30);
-        felicidad   = prefs.getInt("felicidad", 70);
-        energia     = prefs.getInt("energia", 80);
+        long ultimaComida=prefs.getLong("ultima_comida",System.currentTimeMillis());
+        long minSin=(System.currentTimeMillis()-ultimaComida)/60000L;
+        hambreNivel=(int)Math.min(100,minSin*100/30);
+        felicidad=prefs.getInt("felicidad",70);
+        energia  =prefs.getInt("energia",  80);
  
         createNotificationChannel();
-        startForeground(1, buildNotification());
+        startForeground(1,buildNotification());
  
-        wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        overlayType = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            : WindowManager.LayoutParams.TYPE_PHONE;
+        wm=(WindowManager)getSystemService(WINDOW_SERVICE);
+        overlayType=Build.VERSION.SDK_INT>=Build.VERSION_CODES.O
+            ?WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            :WindowManager.LayoutParams.TYPE_PHONE;
  
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        currentX = dm.widthPixels / 2f - dp(DUCK_SIZE_DP) / 2f;
-        currentY = dm.heightPixels * 0.72f;
-        targetX = currentX; targetY = currentY;
+        DisplayMetrics dm=getResources().getDisplayMetrics();
+        currentX=dm.widthPixels/2f-dp(DUCK_SIZE_DP)/2f;
+        currentY=dm.heightPixels*0.72f;
+        targetX=currentX;targetY=currentY;
  
         setupFootprintOverlay();
         setupBubbleWindow();
@@ -157,306 +151,316 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         setupGyroscope();
         startMoveLoop();
         startRandomSounds();
-        iniciarSistemaStats();
+        iniciarSistemaHambre();
  
-        mainHandler.postDelayed(() -> showBubble(saludoInicial(), 5000, false), 1200);
-        mainHandler.postDelayed(this::iniciarWakeWord, 4000);
+        mainHandler.postDelayed(()->showBubble(saludoInicial(),5000,false),1200);
+ 
+        // ✅ Iniciar wake word con SpeechRecognizer
+        // Esperamos 5 segundos para que todo esté listo
+        mainHandler.postDelayed(this::iniciarWakeWord,5000);
+    }
+ 
+    private String saludoInicial(){
+        String n=nombreMascota.isEmpty()?"Quacky":capitalize(nombreMascota);
+        if(hambreNivel>=80)return"¡Tengo hambre! 😋 Abre la app para darme de comer";
+        switch(animalTipo){case"cat":return"¡Miau! Soy "+n+" 🐱 Di mi nombre para hablar";case"dog":return"¡Guau! Soy "+n+" 🐶 Di mi nombre para hablar";default:return"¡Quack! Soy "+n+" 🐥 Di mi nombre para hablar";}
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  SISTEMA TAMAGOTCHI — 3 estadísticas
+    //  WAKE WORD — SpeechRecognizer corriendo en el main thread del Service
+    //
+    //  Flujo:
+    //  iniciarWakeWord() → iniciarCicloWake() → startListening()
+    //  Si oye el nombre → reaccionarAlNombre() → (espera 8s) → iniciarCicloWake()
+    //  Si timeout/error → (espera 500ms) → iniciarCicloWake()
     // ─────────────────────────────────────────────────────────────────────────
-    private void iniciarSistemaStats() {
-        // Hambre: sube 1% cada 18s → 100% en 30 minutos
-        hambreTick = new Runnable() {
-            @Override public void run() {
-                if (!estaComiendo && hambreNivel < 100) {
-                    hambreNivel = Math.min(100, hambreNivel + 1);
-                    actualizarHambreEnAnimal();
-                    guardarStats();
-                    if (hambreNivel >= 80 && quejaRunnable == null) activarQuejas();
-                }
-                hambreHandler.postDelayed(this, 18_000L);
-            }
-        };
-        hambreHandler.postDelayed(hambreTick, 18_000L);
- 
-        // Felicidad y energía: bajan lentamente con el tiempo
-        statDecayTick = new Runnable() {
-            @Override public void run() {
-                if (!estaComiendo) {
-                    felicidad = Math.max(0, felicidad - 1);
-                    energia   = Math.max(0, energia   - 1);
-                    guardarStats();
-                }
-                statHandler.postDelayed(this, 10 * 60_000L); // cada 10 minutos
-            }
-        };
-        statHandler.postDelayed(statDecayTick, 10 * 60_000L);
- 
-        // Quejas si ya arrancó con hambre
-        actualizarHambreEnAnimal();
-        if (hambreNivel >= 80) activarQuejas();
+    private void iniciarWakeWord(){
+        if(nombreMascota.isEmpty()){
+            // Sin nombre configurado → el botón de notificación y el toque siguen funcionando
+            showBubble("⚠️ Configura un nombre en la app para activación por voz",5000,false);
+            return;
+        }
+        wakeActivo=true;
+        iniciarCicloWake();
     }
  
-    private void guardarStats() {
-        getSharedPreferences("quacky_prefs", MODE_PRIVATE).edit()
-            .putInt("hambre_nivel", hambreNivel)
-            .putInt("felicidad", felicidad)
-            .putInt("energia", energia)
-            .apply();
-    }
+    private void iniciarCicloWake(){
+        // No iniciar si estamos en otra cosa
+        if(!wakeActivo||enComando||isTalking||estaComiendo) return;
  
-    private void actualizarHambreEnAnimal() {
-        if (animalView instanceof DuckView)    ((DuckView)  animalView).setHungerLevel(hambreNivel);
-        else if (animalView instanceof PetView) ((PetView)  animalView).setHungerLevel(hambreNivel);
-    }
+        // Destruir recognizer anterior
+        destruirWakeRecognizer();
  
-    // Quejas según nivel de hambre
-    private void activarQuejas() {
-        if (quejaRunnable != null) return;
-        quejaRunnable = new Runnable() {
-            @Override public void run() {
-                if (hambreNivel < 80) { quejaRunnable = null; return; }
-                if (!isListening && !isTalking && !estaComiendo) {
-                    String[] msgs = hambreNivel >= 100
-                        ? new String[]{"😵 ¡Me muero de hambre! ¡Abre la app!","🥣 ¡SOCORRO! ¡Necesito comida YA!","🆘 ¡Me estoy desvaneciendo de hambre!"}
-                        : new String[]{"😋 ¡Psst! ¿Me das algo de comer? Abre la app","🍖 Mi barriguita hace ruidos extraños...","🥺 ¡Tengo hambre! ¡Desliza a alimentar!","😋 ¡Antojo de algo rico! Abre la app 🍕"};
-                    showBubble(msgs[rng.nextInt(msgs.length)], 4000, true);
-                    animarSalto();
-                }
-                int intervalo = hambreNivel >= 100 ? 12_000 : 25_000;
-                quejaHandler.postDelayed(this, intervalo);
-            }
-        };
-        quejaHandler.postDelayed(quejaRunnable, 3000);
-    }
- 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  ALIMENTAR — recibe broadcast desde MainActivity con datos de la comida
-    // ─────────────────────────────────────────────────────────────────────────
-    private void procesarAlimentacion(Intent datos) {
-        if (estaComiendo) return;
-        estaComiendo = true;
- 
-        String emoji     = datos.getStringExtra("comida_emoji");
-        String nombreC   = datos.getStringExtra("comida_nombre");
-        int    hBonus    = datos.getIntExtra("hambre_bonus", 20);
-        int    fBonus    = datos.getIntExtra("felicidad_bonus", 10);
-        int    eBonus    = datos.getIntExtra("energia_bonus", 5);
-        String pref      = datos.getStringExtra("preferencia");
-        if (emoji == null) emoji = "🍖";
-        if (nombreC == null) nombreC = "comida";
-        if (pref == null) pref = "ok";
- 
-        // Detener quejas
-        quejaHandler.removeCallbacks(quejaRunnable);
-        quejaRunnable = null;
- 
-        // Actualizar stats con los bonuses de la comida
-        hambreNivel = Math.max(0, Math.min(100, hambreNivel - hBonus));
-        felicidad   = Math.max(0, Math.min(100, felicidad + fBonus));
-        energia     = Math.max(0, Math.min(100, energia + eBonus));
- 
-        // Guardar tiempo de última comida + stats
-        getSharedPreferences("quacky_prefs", MODE_PRIVATE).edit()
-            .putLong("ultima_comida", System.currentTimeMillis())
-            .putInt("hambre_nivel", hambreNivel)
-            .putInt("felicidad", felicidad)
-            .putInt("energia", energia)
-            .apply();
- 
-        // Animación de comer en el overlay
-        if (animalView instanceof DuckView)    ((DuckView)  animalView).setEatingState(true);
-        else if (animalView instanceof PetView) ((PetView)  animalView).setEatingState(true);
-        actualizarHambreEnAnimal();
- 
-        // Generar reacción de la IA en el overlay (burbuja flotante)
-        generarReaccionComidaIA(emoji, nombreC, pref, fBonus);
- 
-        // Terminar animación de comer después de 7 segundos
-        mainHandler.postDelayed(() -> {
-            estaComiendo = false;
-            if (animalView instanceof DuckView)    ((DuckView)  animalView).setEatingState(false);
-            else if (animalView instanceof PetView) ((PetView)  animalView).setEatingState(false);
-            // Pequeña frase post-comida
-            String[] postComida = {"¡Estuvo delicioso! 😊","¡Gracias por cuidarme! ❤️","¡Me siento mucho mejor! 😋"};
-            showBubble(postComida[rng.nextInt(postComida.length)], 4000, false);
-        }, 7000);
-    }
- 
-    // Generar reacción de la IA basada en la preferencia de la comida
-    private void generarReaccionComidaIA(String emoji, String nombreC, String pref, int fBonus) {
-        String n = capitalize(nombreMascota.isEmpty() ? "Quacky" : nombreMascota);
-        String tipoAnimal;
-        switch (animalTipo) { case "cat": tipoAnimal="gato"; break; case "dog": tipoAnimal="perro"; break; default: tipoAnimal="pato"; }
- 
-        String sentimiento;
-        switch (pref) {
-            case "love":    sentimiento="¡es tu comida FAVORITA! La amas con todo tu ser."; break;
-            case "like":    sentimiento="te gusta bastante."; break;
-            case "dislike": sentimiento="no te gusta nada, pero te la comiste porque tenías hambre."; break;
-            default:        sentimiento="es una comida normal para ti."; break;
+        // Crear nuevo SpeechRecognizer en el main thread
+        // (el Service corre en el main thread, así que esto es seguro)
+        try {
+            wakeRecognizer = SpeechRecognizer.createSpeechRecognizer(DuckOverlayService.this);
+        } catch (Exception e) {
+            // Dispositivo sin reconocimiento de voz
+            return;
         }
  
-        // Reacción inmediata (sin esperar la IA)
-        String inmediata;
-        switch (pref) {
-            case "love":    inmediata = "¡¡SÍ!! ¡¡" + emoji + "!! ❤️❤️"; break;
-            case "like":    inmediata = "¡Mmm! " + emoji + " 😊"; break;
-            case "dislike": inmediata = "Ugh... " + emoji + " 🤢..."; break;
-            default:        inmediata = "Gracias " + emoji + " 😐"; break;
-        }
-        showBubble(inmediata, 0, true);
- 
-        // Respuesta completa de Groq (tarda 1-2s)
-        String prompt = "Eres "+n+", un "+tipoAnimal+" virtual muy expresivo. Acabas de comer "+emoji+" "+nombreC+". Para ti "+sentimiento
-            +" Reacciona con UNA oración corta, expresiva y divertida en español mexicano. Sin comillas. Puedes incluir un emoji al final.";
- 
-        new Thread(() -> {
-            try {
-                JSONArray msgs = new JSONArray();
-                JSONObject um  = new JSONObject(); um.put("role","user"); um.put("content",prompt); msgs.put(um);
-                JSONObject body = new JSONObject(); body.put("model",GROQ_MODEL); body.put("max_tokens",60); body.put("messages",msgs);
-                URL url = new URL(GROQ_URL); HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST"); conn.setRequestProperty("Content-Type","application/json"); conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);
-                conn.setDoOutput(true); conn.setConnectTimeout(8000); conn.setReadTimeout(8000);
-                try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}
-                StringBuilder sb = new StringBuilder();
-                try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}
-                String reply = new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim();
-                mainHandler.post(() -> showBubble(reply, 6000, true));
-            } catch (Exception e) {
-                // Fallback local
-                String[] fb;
-                if (pref.equals("love"))    fb = new String[]{"¡ESTO ES LO MEJOR DEL MUNDO! ❤️","¡Dame más, por favor! ❤️"};
-                else if (pref.equals("dislike")) fb = new String[]{"Guácala... pero gracias 🤢","¡Próxima vez algo mejor! 🤢"};
-                else fb = new String[]{"¡Qué rico estuvo! 😊","¡Gracias por cuidarme! 😊"};
-                mainHandler.post(() -> showBubble(fb[rng.nextInt(fb.length)], 5000, true));
+        wakeRecognizer.setRecognitionListener(new RecognitionListener(){
+            @Override
+            public void onResults(Bundle results){
+                if(!wakeActivo||enComando) return;
+                List<String> matches=results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if(matches!=null && detectarNombre(matches)){
+                    // ✅ NOMBRE DETECTADO
+                    reaccionarAlNombre();
+                    // Reanudar después de que termine el comando
+                    mainHandler.postDelayed(()->iniciarCicloWake(),8000);
+                }else{
+                    // No fue el nombre → reiniciar después de pausa breve
+                    mainHandler.postDelayed(()->iniciarCicloWake(),600);
+                }
             }
-        }).start();
-    }
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  WAKE WORD via Groq Whisper (MediaRecorder → Whisper → detectar nombre)
-    // ─────────────────────────────────────────────────────────────────────────
-    private void iniciarWakeWord() {
-        if (nombreMascota.isEmpty()) return;
-        wakeActivo = true;
-        wakeAudioFile = new File(getCacheDir(), "quacky_wake.m4a");
-        wakeThread = new Thread(() -> {
-            while (wakeActivo && !Thread.currentThread().isInterrupted()) {
-                if (enComando || isTalking || estaComiendo) { try{Thread.sleep(1000);}catch(InterruptedException e){break;} continue; }
-                try {
-                    grabarAudio(2000);
-                    if (!wakeActivo) break;
-                    String t = transcribirConWhisper(wakeAudioFile);
-                    if (t != null && !t.isEmpty() && nombreEnTranscripcion(t)) {
-                        mainHandler.post(this::reaccionarAlNombre);
-                        try{Thread.sleep(8000);}catch(InterruptedException e){break;}
-                        continue;
-                    }
-                    Thread.sleep(300);
-                } catch (InterruptedException e) { break; }
-                catch (Exception e) { try{Thread.sleep(2000);}catch(InterruptedException ie){break;} }
+            @Override
+            public void onPartialResults(Bundle partial){
+                // Resultados parciales = más rápido
+                if(!wakeActivo||enComando) return;
+                List<String> p=partial.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if(p!=null && detectarNombre(p)){
+                    destruirWakeRecognizer();
+                    reaccionarAlNombre();
+                    mainHandler.postDelayed(()->iniciarCicloWake(),8000);
+                }
             }
+ 
+            @Override
+            public void onError(int error){
+                if(!wakeActivo||enComando) return;
+                // ERROR_NO_MATCH / SPEECH_TIMEOUT → reinicio rápido
+                // Otros errores → reinicio más lento
+                int delay=(error==SpeechRecognizer.ERROR_NO_MATCH
+                        ||error==SpeechRecognizer.ERROR_SPEECH_TIMEOUT)?600:2000;
+                mainHandler.postDelayed(()->iniciarCicloWake(),delay);
+            }
+ 
+            // Métodos vacíos requeridos por la interfaz
+            @Override public void onReadyForSpeech(Bundle p)    {}
+            @Override public void onBeginningOfSpeech()         {}
+            @Override public void onRmsChanged(float v)         {}
+            @Override public void onBufferReceived(byte[] b)    {}
+            @Override public void onEndOfSpeech()               {}
+            @Override public void onEvent(int t,Bundle b)       {}
         });
-        wakeThread.setDaemon(true);
-        wakeThread.start();
+ 
+        // Configurar la escucha
+        Intent intent=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE,"es-MX");
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS,5);
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS,true);
+        // Ventana larga de silencio → menos reinicios → menos parpadeo del mic
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,4000L);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,3000L);
+ 
+        try{
+            wakeRecognizer.startListening(intent);
+        }catch(Exception e){
+            // Fallo al iniciar → reintentar
+            mainHandler.postDelayed(()->iniciarCicloWake(),3000);
+        }
     }
  
-    private void grabarAudio(int durMs) throws Exception {
-        detenerGrabacion();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) mediaRecorder = new MediaRecorder(this);
-        else mediaRecorder = new MediaRecorder();
-        mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-        mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-        mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-        mediaRecorder.setAudioSamplingRate(16000); mediaRecorder.setAudioEncodingBitRate(32000);
-        mediaRecorder.setOutputFile(wakeAudioFile.getAbsolutePath());
-        mediaRecorder.prepare(); mediaRecorder.start();
-        Thread.sleep(durMs);
-        detenerGrabacion();
+    private void destruirWakeRecognizer(){
+        if(wakeRecognizer!=null){
+            try{wakeRecognizer.cancel();}catch(Exception ignored){}
+            try{wakeRecognizer.destroy();}catch(Exception ignored){}
+            wakeRecognizer=null;
+        }
     }
  
-    private void detenerGrabacion() {
-        if (mediaRecorder!=null){try{mediaRecorder.stop();}catch(Exception ignored){}try{mediaRecorder.release();}catch(Exception ignored){}mediaRecorder=null;}
-    }
- 
-    private String transcribirConWhisper(File f) {
-        if(f==null||!f.exists()||f.length()<100)return null;
-        try{String b="Boundary"+System.currentTimeMillis();URL url=new URL(GROQ_WHISPER);HttpURLConnection c=(HttpURLConnection)url.openConnection();c.setRequestMethod("POST");c.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);c.setRequestProperty("Content-Type","multipart/form-data; boundary="+b);c.setDoOutput(true);c.setConnectTimeout(8000);c.setReadTimeout(8000);OutputStream out=new DataOutputStream(c.getOutputStream());out.write(("--"+b+"\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-large-v3-turbo\r\n").getBytes());out.write(("--"+b+"\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nes\r\n").getBytes());out.write(("--"+b+"\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\njson\r\n").getBytes());out.write(("--"+b+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.m4a\"\r\nContent-Type: audio/mp4\r\n\r\n").getBytes());FileInputStream fis=new FileInputStream(f);byte[]buf=new byte[4096];int r;while((r=fis.read(buf))!=-1)out.write(buf,0,r);fis.close();out.write(("\r\n--"+b+"--\r\n").getBytes());out.flush();if(c.getResponseCode()==200){BufferedReader br=new BufferedReader(new InputStreamReader(c.getInputStream(),StandardCharsets.UTF_8));StringBuilder sb=new StringBuilder();String line;while((line=br.readLine())!=null)sb.append(line);br.close();return new JSONObject(sb.toString()).optString("text","").toLowerCase().trim();}}catch(Exception ignored){}return null;
-    }
- 
-    private boolean nombreEnTranscripcion(String t) {
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Detección del nombre con coincidencia aproximada (Levenshtein)
+    // ─────────────────────────────────────────────────────────────────────────
+    private boolean detectarNombre(List<String> candidatos){
+        if(nombreMascota.isEmpty()||candidatos==null) return false;
         String n=nombreMascota.toLowerCase().trim();
-        if(t.contains(n))return true;
-        for(String p:t.split("[\\s,.!?]+")){if(p.isEmpty())continue;if(p.equals(n))return true;if(n.length()>=4&&levenshtein(p,n)<=2)return true;if(n.length()>=3&&p.length()>=3&&p.substring(0,3).equals(n.substring(0,3)))return true;}
+        for(String candidato:candidatos){
+            String c=candidato.toLowerCase().trim();
+            if(c.contains(n)) return true;
+            for(String palabra:c.split("\\s+")){
+                if(palabra.isEmpty()) continue;
+                if(palabra.equals(n)) return true;
+                if(n.length()>=4 && levenshtein(palabra,n)<=2) return true;
+                if(n.length()>=3 && palabra.length()>=3 && palabra.substring(0,3).equals(n.substring(0,3))) return true;
+            }
+        }
         return false;
     }
  
-    private int levenshtein(String a,String b){int la=a.length(),lb=b.length();int[][]dp=new int[la+1][lb+1];for(int i=0;i<=la;i++)dp[i][0]=i;for(int j=0;j<=lb;j++)dp[0][j]=j;for(int i=1;i<=la;i++)for(int j=1;j<=lb;j++)dp[i][j]=a.charAt(i-1)==b.charAt(j-1)?dp[i-1][j-1]:1+Math.min(dp[i-1][j-1],Math.min(dp[i-1][j],dp[i][j-1]));return dp[la][lb];}
+    private int levenshtein(String a,String b){
+        int la=a.length(),lb=b.length();
+        int[][]dp=new int[la+1][lb+1];
+        for(int i=0;i<=la;i++)dp[i][0]=i;
+        for(int j=0;j<=lb;j++)dp[0][j]=j;
+        for(int i=1;i<=la;i++)for(int j=1;j<=lb;j++)
+            dp[i][j]=a.charAt(i-1)==b.charAt(j-1)?dp[i-1][j-1]:1+Math.min(dp[i-1][j-1],Math.min(dp[i-1][j],dp[i][j-1]));
+        return dp[la][lb];
+    }
  
-    private void reaccionarAlNombre() {
-        if (enComando) return;
-        enComando = true; isListening = true;
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Reacción cuando se detecta el nombre
+    // ─────────────────────────────────────────────────────────────────────────
+    private void reaccionarAlNombre(){
+        if(enComando) return;
+        enComando=true; isListening=true;
         String saludo;
-        if (hambreNivel >= 80) saludo = "¡Hola! Pero primero... ¿me das de comer? 😋🍖";
-        else switch (animalTipo) { case "cat": saludo="¡Miau! ¿Qué necesitas? 🐱"; break; case "dog": saludo="¡Guau! ¡Aquí estoy! 🐶"; break; default: saludo="¡Quack! ¿Qué necesitas? 🐥"; }
-        showBubble(saludo, 0, true); animarSalto();
-        mainHandler.postDelayed(this::lanzarDialogoComando, 1800);
+        if(hambreNivel>=80)saludo="¡Hola! Pero... 😋 ¿me das de comer primero? Abre la app 🍖";
+        else switch(animalTipo){case"cat":saludo="¡Miau! ¿Qué necesitas? 🐱";break;case"dog":saludo="¡Guau! ¡Aquí estoy! 🐶";break;default:saludo="¡Quack! ¿Qué necesitas? 🐥";}
+        showBubble(saludo,0,true);
+        animarSalto();
+        mainHandler.postDelayed(this::lanzarDialogoComando,1800);
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  ACTIVAR ESCUCHA (desde toque o botón notificación)
+    // ─────────────────────────────────────────────────────────────────────────
+    private void startListening(){
+        if(isTalking||isListening) return;
+        isListening=true; enComando=true;
+        // Pausar el wake word mientras estamos en comando
+        destruirWakeRecognizer();
+        if(tts!=null&&ttsListo)tts.stop();
+        showBubble("...te escucho 👂",0,false);
+        animarSalto();
+        lanzarDialogoComando();
+    }
+ 
+    private void lanzarDialogoComando(){
+        try{
+            Intent i=new Intent(DuckOverlayService.this,VoiceActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            startActivity(i);
+        }catch(Exception e){isListening=false;enComando=false;reanudarWake();}
+    }
+ 
+    private void reanudarWake(){
+        enComando=false;
+        mainHandler.postDelayed(()->iniciarCicloWake(),2500);
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SISTEMA DE HAMBRE — Tamagotchi
+    // ─────────────────────────────────────────────────────────────────────────
+    private void iniciarSistemaHambre(){
+        hambreTick=new Runnable(){@Override public void run(){
+            if(!estaComiendo&&hambreNivel<100){
+                hambreNivel=Math.min(100,hambreNivel+1);
+                actualizarHambreEnAnimal();
+                guardarStats();
+                if(hambreNivel>=80&&quejaRunnable==null)activarQuejas();
+            }
+            hambreHandler.postDelayed(this,18_000L);
+        }};
+        hambreHandler.postDelayed(hambreTick,18_000L);
+        actualizarHambreEnAnimal();
+        if(hambreNivel>=80)activarQuejas();
+    }
+ 
+    private void guardarStats(){
+        getSharedPreferences("quacky_prefs",MODE_PRIVATE).edit()
+            .putInt("hambre_nivel",hambreNivel).putInt("felicidad",felicidad).putInt("energia",energia).apply();
+    }
+ 
+    private void actualizarHambreEnAnimal(){
+        if(animalView instanceof DuckView)   ((DuckView) animalView).setHungerLevel(hambreNivel);
+        else if(animalView instanceof PetView)((PetView) animalView).setHungerLevel(hambreNivel);
+    }
+ 
+    private void activarQuejas(){
+        if(quejaRunnable!=null) return;
+        quejaRunnable=new Runnable(){@Override public void run(){
+            if(hambreNivel<80){quejaRunnable=null;return;}
+            if(!isListening&&!isTalking&&!estaComiendo){
+                String[]msgs=hambreNivel>=100
+                    ?new String[]{"😵 ¡Me muero de hambre! ¡Abre la app!","🆘 ¡Necesito comida ya!"}
+                    :new String[]{"😋 Tengo hambre... abre la app para darme de comer","🍖 ¿Me darías algo de comer?","🥣 Mi tazón está vacío..."};
+                showBubble(msgs[rng.nextInt(msgs.length)],4000,true);
+                animarSalto();
+            }
+            quejaHandler.postDelayed(this,hambreNivel>=100?12_000:25_000);
+        }};
+        quejaHandler.postDelayed(quejaRunnable,3000);
+    }
+ 
+    private void procesarAlimentacion(Intent datos){
+        if(estaComiendo) return;
+        estaComiendo=true;
+ 
+        String emoji   =(String)datos.getStringExtra("comida_emoji");if(emoji==null)emoji="🍖";
+        String nomC    =(String)datos.getStringExtra("comida_nombre");if(nomC==null)nomC="comida";
+        int    hBonus  =datos.getIntExtra("hambre_bonus",20);
+        int    fBonus  =datos.getIntExtra("felicidad_bonus",10);
+        int    eBonus  =datos.getIntExtra("energia_bonus",5);
+        String pref    =(String)datos.getStringExtra("preferencia");if(pref==null)pref="ok";
+ 
+        quejaHandler.removeCallbacks(quejaRunnable); quejaRunnable=null;
+        hambreNivel=Math.max(0,Math.min(100,hambreNivel-hBonus));
+        felicidad  =Math.max(0,Math.min(100,felicidad+fBonus));
+        energia    =Math.max(0,Math.min(100,energia+eBonus));
+ 
+        getSharedPreferences("quacky_prefs",MODE_PRIVATE).edit()
+            .putLong("ultima_comida",System.currentTimeMillis())
+            .putInt("hambre_nivel",hambreNivel).putInt("felicidad",felicidad).putInt("energia",energia).apply();
+ 
+        if(animalView instanceof DuckView)   ((DuckView) animalView).setEatingState(true);
+        else if(animalView instanceof PetView)((PetView) animalView).setEatingState(true);
+        actualizarHambreEnAnimal();
+ 
+        String[]msgs={pref.equals("love")?"¡¡SÍ!! ¡"+emoji+"! ¡Es mi favorito! ❤️":pref.equals("dislike")?"Ugh... "+emoji+"... gracias 🤢":"¡Nom nom! "+emoji+" ¡Gracias! 😊"};
+        showBubble(msgs[0],0,true);
+ 
+        mainHandler.postDelayed(()->{
+            estaComiendo=false;
+            if(animalView instanceof DuckView)   ((DuckView) animalView).setEatingState(false);
+            else if(animalView instanceof PetView)((PetView) animalView).setEatingState(false);
+            showBubble("😊 ¡Estuvo delicioso! ¡Gracias!",4000,false);
+        },7000);
     }
  
     // ─────────────────────────────────────────────────────────────────────────
     //  RECEPTORES
     // ─────────────────────────────────────────────────────────────────────────
-    private void setupReceivers() {
-        // Botón 🎤 notificación
-        escucharReceiver = new BroadcastReceiver() {
-            @Override public void onReceive(Context c,Intent i) { mainHandler.post(()->startListening()); }
-        };
-        registrar(escucharReceiver, ACTION_ESCUCHAR);
+    private void setupReceivers(){
+        escucharReceiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){mainHandler.post(()->startListening());}};
+        registrar(escucharReceiver,ACTION_ESCUCHAR);
  
-        // Resultado de VoiceActivity
-        voiceResultReceiver = new BroadcastReceiver() {
-            @Override public void onReceive(Context c,Intent i) {
-                String texto = i.getStringExtra("voice_text");
-                mainHandler.post(() -> {
-                    isListening=false; enComando=false;
-                    if (texto!=null&&!texto.isEmpty()) {
-                        if (!handleVoiceCommand(texto)) { showBubble("Tú: \""+texto+"\"",2500,false); askGroq(texto); }
-                    } else showBubble("No te escuché 🐾",2000,false);
-                });
-            }
-        };
-        registrar(voiceResultReceiver, "com.quacky.duck.VOICE_RESULT");
+        voiceResultReceiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){
+            String texto=i.getStringExtra("voice_text");
+            mainHandler.post(()->{
+                isListening=false;
+                if(texto!=null&&!texto.isEmpty()){if(!handleVoiceCommand(texto)){showBubble("Tú: \""+texto+"\"",2500,false);askGroq(texto);}}
+                else showBubble("No te escuché 🐾",2000,false);
+                // Reanudar wake word después del comando
+                reanudarWake();
+            });}};
+        registrar(voiceResultReceiver,"com.quacky.duck.VOICE_RESULT");
  
-        // ✅ ALIMENTAR — enviado por MainActivity con los datos de la comida arrastrada
-        alimentarReceiver = new BroadcastReceiver() {
-            @Override public void onReceive(Context c,Intent i) {
-                mainHandler.post(() -> procesarAlimentacion(i));
-            }
-        };
-        registrar(alimentarReceiver, ACTION_ALIMENTAR);
+        alimentarReceiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){mainHandler.post(()->procesarAlimentacion(i));}};
+        registrar(alimentarReceiver,ACTION_ALIMENTAR);
     }
  
     private void registrar(BroadcastReceiver r,String a){IntentFilter f=new IntentFilter(a);if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.TIRAMISU)registerReceiver(r,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(r,f);}
  
-    private void startListening(){if(isTalking||isListening)return;isListening=true;enComando=true;if(tts!=null&&ttsListo)tts.stop();showBubble("...te escucho 👂",0,false);animarSalto();lanzarDialogoComando();}
-    private void lanzarDialogoComando(){try{Intent i=new Intent(DuckOverlayService.this,VoiceActivity.class);i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_CLEAR_TOP);startActivity(i);}catch(Exception e){isListening=false;enComando=false;}}
- 
     // ─────────────────────────────────────────────────────────────────────────
     //  NOTIFICACIÓN
     // ─────────────────────────────────────────────────────────────────────────
-    private Notification buildNotification() {
+    private Notification buildNotification(){
         PendingIntent piApp=PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE);
         Intent ei=new Intent(ACTION_ESCUCHAR);ei.setPackage(getPackageName());
         PendingIntent piE=PendingIntent.getBroadcast(this,1,ei,PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         String n=nombreMascota.isEmpty()?"Quacky":capitalize(nombreMascota);
-        String titulo=hambreNivel>=80?"🍖 ¡"+n+" tiene hambre!":"🐾 "+n+" activo";
-        String texto =hambreNivel>=80?"Abre la app para dar de comer 🥣":"Di \""+n+"\" para hablar 🎤  •  Abre la app 🍖";
-        return new NotificationCompat.Builder(this,CHANNEL_ID).setContentTitle(titulo).setContentText(texto)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(piApp)
+        String titulo=hambreNivel>=80?"🍖 ¡"+n+" tiene hambre!":"🐾 "+n+" escuchando...";
+        String texto =hambreNivel>=80?"Abre la app para dar de comer 🥣":"Di \""+n+"\" o tócame para hablar 🎤";
+        return new NotificationCompat.Builder(this,CHANNEL_ID)
+            .setContentTitle(titulo).setContentText(texto)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentIntent(piApp)
             .addAction(android.R.drawable.ic_btn_speak_now,"🎤 Hablar",piE)
             .setOngoing(true).build();
     }
@@ -467,29 +471,23 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private void setupAnimalWindow(){int px=dp(DUCK_SIZE_DP);switch(animalTipo){case"cat":case"dog":{PetView pv=new PetView(this);int resId=getResources().getIdentifier(animalTipo,"drawable",getPackageName());if(resId!=0)try{Bitmap b=BitmapFactory.decodeResource(getResources(),resId);if(b!=null)pv.setAnimalBitmap(b);}catch(Exception ignored){}animalView=pv;break;}default:animalView=new DuckView(this);}animalParams=new WindowManager.LayoutParams(px,px,overlayType,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL|WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,PixelFormat.TRANSLUCENT);animalParams.gravity=Gravity.TOP|Gravity.START;animalParams.x=(int)currentX;animalParams.y=(int)currentY;wm.addView(animalView,animalParams);animalView.setOnTouchListener(new View.OnTouchListener(){long ts;@Override public boolean onTouch(View v,MotionEvent e){if(e.getAction()==MotionEvent.ACTION_DOWN)ts=System.currentTimeMillis();if(e.getAction()==MotionEvent.ACTION_UP&&System.currentTimeMillis()-ts<400)startListening();return true;}});setupWalkAnimation();actualizarHambreEnAnimal();}
     private void setWalkState(boolean m,float p,float d){if(estaComiendo)return;if(animalView instanceof DuckView)((DuckView)animalView).setWalkState(m,p,d);else if(animalView instanceof PetView)((PetView)animalView).setWalkState(m,p,d);}
  
-    // BURBUJA
     private void setupBubbleWindow(){bubbleCard=new LinearLayout(this);bubbleCard.setOrientation(LinearLayout.VERTICAL);bubbleCard.setPadding(dp(12),dp(8),dp(12),dp(8));GradientDrawable bg=new GradientDrawable();bg.setCornerRadius(dp(14));bg.setColor(0xEE1A1A3A);bg.setStroke(dp(1),0xFFFFD700);bubbleCard.setBackground(bg);bubbleText=new TextView(this);bubbleText.setTextColor(Color.WHITE);bubbleText.setTextSize(13);bubbleText.setMaxWidth(dp(240));bubbleCard.addView(bubbleText);bubbleCard.setVisibility(View.GONE);bubbleParams=new WindowManager.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,ViewGroup.LayoutParams.WRAP_CONTENT,overlayType,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE|WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,PixelFormat.TRANSLUCENT);bubbleParams.gravity=Gravity.TOP|Gravity.START;bubbleParams.x=(int)currentX;bubbleParams.y=Math.max(0,(int)currentY-dp(85));wm.addView(bubbleCard,bubbleParams);}
     private void actualizarPosBurbuja(){DisplayMetrics dm=getResources().getDisplayMetrics();int bx=Math.max(dp(8),Math.min((int)currentX-dp(10),dm.widthPixels-dp(250)));int by=Math.max(dp(8),(int)currentY-dp(90));bubbleParams.x=bx;bubbleParams.y=by;try{if(bubbleCard.getVisibility()==View.VISIBLE)wm.updateViewLayout(bubbleCard,bubbleParams);}catch(Exception ignored){}}
  
-    // TTS
     private void setupTTS(){tts=new TextToSpeech(this,s->{if(s==TextToSpeech.SUCCESS){configurarVoz(getSharedPreferences("quacky_prefs",MODE_PRIVATE).getString("voz","femenina"));ttsListo=true;}});}
     private void configurarVoz(String tipo){if(tts==null)return;if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.LOLLIPOP){Set<Voice>vs=tts.getVoices();if(vs!=null)for(Voice v:vs){if(v.getLocale()==null||!v.getLocale().getLanguage().equals("es"))continue;String n=v.getName().toLowerCase();if(tipo.equals("masculina")&&(n.contains("-m-")||n.contains("male")||n.contains("smb"))){tts.setVoice(v);return;}if(tipo.equals("femenina")&&(n.contains("-f-")||n.contains("female")||n.contains("sfb")||n.contains("esf"))){tts.setVoice(v);return;}}}tts.setLanguage(new Locale("es","MX"));tts.setPitch(tipo.equals("masculina")?0.78f:1.25f);tts.setSpeechRate(tipo.equals("masculina")?0.93f:1.05f);}
     private void hablar(String texto){if(!ttsListo||tts==null)return;String l=texto.replaceAll("[^\\p{L}\\p{N}\\s.,;:!?áéíóúüñÁÉÍÓÚÜÑ¿¡\\-]"," ").replaceAll("\\s+"," ").trim();if(!l.isEmpty())tts.speak(l,TextToSpeech.QUEUE_FLUSH,null,"q_"+System.currentTimeMillis());}
  
-    // GIROSCOPIO
     private void setupGyroscope(){sensorManager=(SensorManager)getSystemService(SENSOR_SERVICE);if(sensorManager==null)return;gyroSensor=sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);if(gyroSensor!=null)sensorManager.registerListener(this,gyroSensor,SensorManager.SENSOR_DELAY_GAME);else{Sensor a=sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);if(a!=null)sensorManager.registerListener(this,a,SensorManager.SENSOR_DELAY_GAME);}}
     @Override public void onSensorChanged(SensorEvent e){if(estaComiendo)return;DisplayMetrics dm=getResources().getDisplayMetrics();int px=dp(DUCK_SIZE_DP);if(e.sensor.getType()==Sensor.TYPE_GYROSCOPE){float rx=e.values[0],ry=e.values[1];if(Math.abs(rx)<0.05f)rx=0f;if(Math.abs(ry)<0.05f)ry=0f;gyroVelX+=ry*GYRO_FORCE;gyroVelY+=rx*GYRO_FORCE;targetX=Math.max(0,Math.min(targetX+gyroVelX,dm.widthPixels-px));targetY=Math.max(0,Math.min(targetY+gyroVelY,dm.heightPixels-px));gyroVelX*=0.85f;gyroVelY*=0.85f;float dx=targetX-currentX,dy=targetY-currentY;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);}else if(e.sensor.getType()==Sensor.TYPE_ACCELEROMETER){float ax=-e.values[0],ay=e.values[1];if(Math.abs(ax)<0.3f)ax=0f;if(Math.abs(ay)<0.3f)ay=0f;targetX=Math.max(0,Math.min(targetX+ax*1.2f,dm.widthPixels-px));targetY=Math.max(0,Math.min(targetY-ay*1.2f,dm.heightPixels-px));float dx=targetX-currentX,dy=targetY-currentY;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);}}
     @Override public void onAccuracyChanged(Sensor s,int a){}
  
-    // HUELLAS
     private void setupFootprintOverlay(){DisplayMetrics dm=getResources().getDisplayMetrics();footprintOverlay=new View(this){private final Paint fp=new Paint(Paint.ANTI_ALIAS_FLAG);private final Path pt=new Path();@Override protected void onDraw(Canvas c){long now=System.currentTimeMillis();fp.setStyle(Paint.Style.FILL);synchronized(footprints){Iterator<Footprint>it=footprints.iterator();while(it.hasNext()){Footprint f=it.next();float age=(now-f.born)/(float)FOOTPRINT_LIFE;if(age>=1f){it.remove();continue;}fp.setColor(Color.argb((int)(140*(1f-age)),180,80,0));float s=dm.density*3.5f;c.save();c.translate(f.x,f.y);c.rotate(f.isLeft?-15f:15f);pt.reset();pt.moveTo(0,0);pt.lineTo(-s,s*.6f);pt.lineTo(-s*.4f,s*1.1f);pt.lineTo(s*.2f,s*.7f);pt.lineTo(s*.8f,s*1.1f);pt.lineTo(s*1.2f,s*.5f);pt.close();c.drawPath(pt,fp);c.restore();}}postInvalidateDelayed(60);}};footprintOverlay.setLayerType(View.LAYER_TYPE_SOFTWARE,null);WindowManager.LayoutParams p=new WindowManager.LayoutParams(dm.widthPixels,dm.heightPixels,overlayType,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE|WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,PixelFormat.TRANSLUCENT);p.gravity=Gravity.TOP|Gravity.START;wm.addView(footprintOverlay,p);}
  
-    // WALK + MOVE
     private void setupWalkAnimation(){walkAnim=new Runnable(){@Override public void run(){boolean m=isMoving()&&!estaComiendo;if(m){walkPhase+=0.05f;if(walkPhase>1f)walkPhase=0f;}setWalkState(m,walkPhase,facingRight?1f:-1f);walkHandler.postDelayed(this,25);}};walkHandler.post(walkAnim);}
     private boolean isMoving(){return Math.abs(targetX-currentX)>2||Math.abs(targetY-currentY)>2;}
     private void startMoveLoop(){moveRunnable=new Runnable(){@Override public void run(){if(!estaComiendo){float dx=targetX-currentX,dy=targetY-currentY,dist=(float)Math.sqrt(dx*dx+dy*dy);if(dist>1.5f){float speed=Math.min(SPEED_BASE,Math.max(0.006f,dist/2000f));currentX+=dx*speed;currentY+=dy*speed;if(dx>0!=facingRight)facingRight=dx>0;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);animalParams.x=(int)currentX;animalParams.y=(int)currentY;try{wm.updateViewLayout(animalView,animalParams);}catch(Exception ignored){}actualizarPosBurbuja();float mx=currentX-lastFootX,my=currentY-lastFootY,moved=(float)Math.sqrt(mx*mx+my*my);long now=System.currentTimeMillis();if(moved>dp(20)&&(now-lastFootprintTime)>400){lastFootprintTime=now;lastFootX=currentX;lastFootY=currentY;float ox=nextFootLeft?-dp(4):dp(4);synchronized(footprints){footprints.add(new Footprint(currentX+dp(DUCK_SIZE_DP)/2f+ox,currentY+dp(DUCK_SIZE_DP)-dp(4),now,nextFootLeft));}nextFootLeft=!nextFootLeft;}}}mainHandler.postDelayed(this,16);}};mainHandler.post(moveRunnable);}
  
-    // SONIDOS
     private void startRandomSounds(){quackRunnable=new Runnable(){@Override public void run(){if(!isListening&&!isTalking&&!estaComiendo)playAnimalSound();quackHandler.postDelayed(this,15000+rng.nextInt(30000));}};quackHandler.postDelayed(quackRunnable,8000+rng.nextInt(10000));}
     private void playAnimalSound(){switch(animalTipo){case"cat":playSoundCat();break;case"dog":playSoundDog();break;default:playSoundDuck();}}
     private void playSoundDuck(){new Thread(()->{try{int sr=44100,ms=320,n=sr*ms/1000;short[]s=new short[n];for(int i=0;i<n;i++){double t=(double)i/sr,p=(double)i/n,f=700-350*p,a=p<0.08?p/0.08:Math.max(0,1-(p-0.08)/0.92);double m=a*0.65*Math.sin(2*Math.PI*f*t)+a*0.25*Math.sin(4*Math.PI*f*t);s[i]=(short)Math.max(Short.MIN_VALUE,Math.min(Short.MAX_VALUE,m*Short.MAX_VALUE));}playRaw(s,sr,ms);}catch(Exception ignored){}}).start();mainHandler.post(()->{showBubble(new String[]{"¡Cuak!","¡Quack!","¡Cuaaak!"}[rng.nextInt(3)],1800,false);animarSalto();});}
@@ -498,42 +496,25 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private void playRaw(short[]s,int sr,int d)throws Exception{AudioTrack t=new AudioTrack.Builder().setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()).setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sr).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build()).setBufferSizeInBytes(s.length*2).setTransferMode(AudioTrack.MODE_STATIC).build();t.write(s,0,s.length);t.play();Thread.sleep(d+80);t.stop();t.release();}
     private void animarSalto(){if(animalView!=null)animalView.animate().translationY(-10f).setDuration(130).withEndAction(()->animalView.animate().translationY(0).setDuration(130).start()).start();}
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  COMANDOS DE VOZ
-    // ─────────────────────────────────────────────────────────────────────────
     private boolean handleVoiceCommand(String texto){String lower=texto.toLowerCase().trim();if(lower.contains("alarma")||lower.contains("despiértame")||lower.contains("despertador")){parsearYPonerAlarma(texto);return true;}if(lower.contains("calendario")||lower.contains("recuérdame")||lower.contains("recordame")||lower.contains("cumpleaños de")||lower.contains("agrega")){parsearYAgregarCalendario(texto);return true;}if((lower.contains("whatsapp")||lower.contains("wsp")||lower.contains("wasap"))&&(lower.contains("llama")||lower.contains("videollamada"))){llamarPorWhatsApp(extraerNombre(lower,texto));return true;}if(lower.contains("whatsapp")||lower.contains("wsp")||lower.contains("wasap")){abrirWhatsAppChat(extraerNombre(lower,texto),extraerMensaje(lower,texto));return true;}if(lower.contains("pon la canción")||lower.contains("reproduce")||lower.contains("quiero escuchar")||lower.contains("ponme")||lower.contains("pon música de")){pedirYReproducirCancion(texto);return true;}if(lower.contains("pon música")||lower.contains("abre spotify")||lower.contains("pon spotify")||lower.contains("abre tidal")){abrirAppMusica(detectarAppMusica(lower),null);return true;}for(String p:new String[]{"marcale a ","llama a ","llámale a ","llamar a ","marcar a ","marca a "}){if(lower.contains(p)&&!lower.contains("whatsapp")&&!lower.contains("wsp")){buscarYLlamar(texto.substring(lower.indexOf(p)+p.length()).trim().replace(" por favor","").trim());return true;}}if(lower.startsWith("abre ")||lower.startsWith("abrir ")||lower.contains("abre la ")){abrirAppDinamica(lower.replace("abre la app de","").replace("abre la ","").replace("abrir la ","").replace("abre ","").replace("abrir ","").trim());return true;}return false;}
     private String extraerNombre(String lower,String texto){String[]ps={"whatsapp a ","wsp a ","wasap a ","manda whatsapp a ","mándale whatsapp a ","llama a ","llámale a ","videollamada a ","mensaje a "};for(String p:ps)if(lower.contains(p)){int idx=lower.indexOf(p)+p.length();String n=texto.substring(idx).trim();for(String c:new String[]{" por whatsapp"," un mensaje"," diciéndole"," diciendo"," que le"," con el mensaje"," que diga"}){int pos=n.toLowerCase().indexOf(c);if(pos>0)n=n.substring(0,pos);}return n.replace(" por favor","").trim();}return"";}
     private String extraerMensaje(String lower,String texto){for(String m:new String[]{"diciéndole ","que diga ","con el mensaje ","diciendo ","el mensaje "}){if(lower.contains(m)){int idx=lower.indexOf(m)+m.length();return texto.substring(idx).trim().replace(" por favor","").trim();}}return"";}
     private void abrirWhatsAppChat(String nombre,String mensaje){if(nombre.isEmpty()){showBubble("¿A quién le escribo?",3000,true);return;}showBubble("🔍 Buscando a "+nombre+"...",0,true);new Thread(()->{String tel=buscarTelefono(nombre);mainHandler.post(()->{if(tel!=null){String num=tel.replaceAll("[^0-9]","");if(!num.startsWith("52")&&num.length()==10)num="52"+num;String url="https://wa.me/"+num+(mensaje.isEmpty()?"":"?text="+Uri.encode(mensaje));showBubble("💬 Chat de "+nombre,4000,true);boolean ok=false;try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse(url));wa.setPackage("com.whatsapp");wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);ok=true;}catch(Exception ignored){}if(!ok)try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse(url));wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);}catch(Exception ignored){}}else showBubble("No encontré a "+nombre,3500,true);});}).start();}
-    private void llamarPorWhatsApp(String nombre){if(nombre.isEmpty()){showBubble("¿A quién llamo?",3000,true);return;}showBubble("📱 Buscando...",0,true);new Thread(()->{String tel=buscarTelefono(nombre);mainHandler.post(()->{if(tel!=null){String num=tel.replaceAll("[^0-9]","");if(!num.startsWith("52")&&num.length()==10)num="52"+num;boolean ok=false;try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse("whatsapp://call?number=+"+num));wa.setPackage("com.whatsapp");wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);ok=true;}catch(Exception ignored){}if(!ok){try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse("https://wa.me/"+num));wa.setPackage("com.whatsapp");wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);}catch(Exception ignored){}showBubble("Chat abierto → toca 📞",5000,true);}}else showBubble("No encontré a "+nombre,3500,true);});}).start();}
-    private void buscarYLlamar(String nombre){showBubble("📞 Buscando...",0,true);new Thread(()->{String tel=buscarTelefono(nombre);mainHandler.post(()->{if(tel!=null){showBubble("📞 Marcando a "+nombre+"...",3000,true);try{Intent l=new Intent(Intent.ACTION_CALL);l.setData(Uri.parse("tel:"+tel));l.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(l);}catch(SecurityException e){showBubble("Necesito permiso de Teléfono",5000,true);};}else showBubble("No encontré a "+nombre,3500,true);});}).start();}
+    private void llamarPorWhatsApp(String nombre){if(nombre.isEmpty()){showBubble("¿A quién llamo?",3000,true);return;}new Thread(()->{String tel=buscarTelefono(nombre);mainHandler.post(()->{if(tel!=null){String num=tel.replaceAll("[^0-9]","");if(!num.startsWith("52")&&num.length()==10)num="52"+num;try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse("whatsapp://call?number=+"+num));wa.setPackage("com.whatsapp");wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);}catch(Exception ignored){try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse("https://wa.me/"+num));wa.setPackage("com.whatsapp");wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);}catch(Exception ignored2){}}}else showBubble("No encontré a "+nombre,3500,true);});}).start();}
+    private void buscarYLlamar(String nombre){new Thread(()->{String tel=buscarTelefono(nombre);mainHandler.post(()->{if(tel!=null){try{Intent l=new Intent(Intent.ACTION_CALL);l.setData(Uri.parse("tel:"+tel));l.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(l);}catch(SecurityException e){showBubble("Necesito permiso de Teléfono",5000,true);};}else showBubble("No encontré a "+nombre,3500,true);});}).start();}
     private String buscarTelefono(String nombre){try{android.database.Cursor c=getContentResolver().query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI,new String[]{ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,ContactsContract.CommonDataKinds.Phone.NUMBER},null,null,null);if(c==null)return null;String buscar=nombre.toLowerCase().trim(),mejor=null;int mejorP=0;while(c.moveToNext()){String nc=c.getString(0),tel=c.getString(1);if(nc==null||tel==null)continue;String nl=nc.toLowerCase().trim();if(nl.equals(buscar)){c.close();return tel.replaceAll("[^+0-9]","");}int p=nl.contains(buscar)?2:buscar.contains(nl)?1:0;if(p>mejorP){mejorP=p;mejor=tel.replaceAll("[^+0-9]","");}}c.close();return mejor;}catch(Exception e){return null;}}
     private void pedirYReproducirCancion(String texto){String cancion=texto.toLowerCase().replace("pon la canción","").replace("reproduce","").replace("ponme","").replace("quiero escuchar","").replace("pon música de","").replace("en spotify","").replace("en tidal","").replace("en qobuz","").trim();String app=detectarAppMusica(texto.toLowerCase());String guardada=getSharedPreferences("quacky_prefs",MODE_PRIVATE).getString("app_musica","");if(!app.equals("spotify")||texto.toLowerCase().contains("spotify")){getSharedPreferences("quacky_prefs",MODE_PRIVATE).edit().putString("app_musica",app).apply();abrirAppMusica(app,cancion);}else if(!guardada.isEmpty())abrirAppMusica(guardada,cancion);else showBubble("🎵 ¿En qué app?",5000,true);}
     private String detectarAppMusica(String l){if(l.contains("tidal"))return"tidal";if(l.contains("qobuz"))return"qobuz";if(l.contains("youtube music")||l.contains("yt music"))return"youtube_music";if(l.contains("deezer"))return"deezer";if(l.contains("amazon music"))return"amazon_music";return"spotify";}
-    private void abrirAppMusica(String app,String cancion){String paquete,nombre;switch(app){case"tidal":paquete="com.aspiro.tidal";nombre="Tidal";break;case"qobuz":paquete="com.qobuz.music";nombre="Qobuz";break;case"youtube_music":paquete="com.google.android.apps.youtube.music";nombre="YouTube Music";break;case"deezer":paquete="deezer.android.app";nombre="Deezer";break;case"amazon_music":paquete="com.amazon.mp3";nombre="Amazon Music";break;default:paquete="com.spotify.music";nombre="Spotify";}showBubble("🎵 "+(cancion!=null&&!cancion.isEmpty()?"Buscando \""+cancion+"\" en "+nombre:"Abriendo "+nombre)+"...",3000,true);try{Intent i=null;if(cancion!=null&&!cancion.isEmpty()&&app.equals("spotify"))i=new Intent(Intent.ACTION_VIEW,Uri.parse("spotify:search:"+Uri.encode(cancion)));if(i==null)i=getPackageManager().getLaunchIntentForPackage(paquete);if(i!=null){i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(i);}else{Intent store=new Intent(Intent.ACTION_VIEW,Uri.parse("market://details?id="+paquete));store.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(store);}}catch(Exception e){showBubble("No pude abrir "+nombre,3000,false);}}
+    private void abrirAppMusica(String app,String cancion){String paquete,nombre;switch(app){case"tidal":paquete="com.aspiro.tidal";nombre="Tidal";break;case"qobuz":paquete="com.qobuz.music";nombre="Qobuz";break;case"youtube_music":paquete="com.google.android.apps.youtube.music";nombre="YouTube Music";break;case"deezer":paquete="deezer.android.app";nombre="Deezer";break;case"amazon_music":paquete="com.amazon.mp3";nombre="Amazon Music";break;default:paquete="com.spotify.music";nombre="Spotify";}try{Intent i=null;if(cancion!=null&&!cancion.isEmpty()&&app.equals("spotify"))i=new Intent(Intent.ACTION_VIEW,Uri.parse("spotify:search:"+Uri.encode(cancion)));if(i==null)i=getPackageManager().getLaunchIntentForPackage(paquete);if(i!=null){i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(i);}}catch(Exception e){showBubble("No pude abrir "+nombre,3000,false);}}
     private void abrirAppDinamica(String nombre){Map<String,String>m=new HashMap<>();m.put("spotify","com.spotify.music");m.put("whatsapp","com.whatsapp");m.put("instagram","com.instagram.android");m.put("facebook","com.facebook.katana");m.put("twitter","com.twitter.android");m.put("x","com.twitter.android");m.put("tiktok","com.zhiliaoapp.musically");m.put("youtube","com.google.android.youtube");m.put("maps","com.google.android.apps.maps");m.put("gmail","com.google.android.gm");m.put("chrome","com.android.chrome");m.put("netflix","com.netflix.mediaclient");m.put("uber","com.ubercab");m.put("tidal","com.aspiro.tidal");m.put("telegram","org.telegram.messenger");m.put("snapchat","com.snapchat.android");m.put("zoom","us.zoom.videomeetings");String pkg=m.get(nombre.toLowerCase().trim());if(pkg!=null){try{Intent i=getPackageManager().getLaunchIntentForPackage(pkg);if(i!=null){i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);showBubble("📱 Abriendo "+nombre+"...",2000,true);startActivity(i);return;}}catch(Exception ignored){}}try{Intent main=new Intent(Intent.ACTION_MAIN);main.addCategory(Intent.CATEGORY_LAUNCHER);List<ResolveInfo>apps=getPackageManager().queryIntentActivities(main,0);String buscar=nombre.toLowerCase().trim();for(ResolveInfo app:apps){String label=app.loadLabel(getPackageManager()).toString().toLowerCase().trim();if(label.contains(buscar)||buscar.contains(label)){Intent i=new Intent(Intent.ACTION_MAIN);i.setComponent(new android.content.ComponentName(app.activityInfo.packageName,app.activityInfo.name));i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);showBubble("📱 Abriendo "+app.loadLabel(getPackageManager())+"...",2000,true);startActivity(i);return;}}}catch(Exception ignored){}showBubble("No encontré \""+nombre+"\"",3000,true);}
-    private void parsearYPonerAlarma(String texto){showBubble("⏰ Configurando alarma...",0,true);askGroqJSON("Extrae la hora de: \""+texto+"\"\nResponde SOLO con JSON: {\"hora\":número,\"minutos\":número,\"etiqueta\":\"texto\"}\nSi dice 'de la tarde' suma 12. 'y media'=minutos:30.",json->{try{int hora=json.getInt("hora"),min=json.optInt("minutos",0);String eta=json.optString("etiqueta","Quacky");Intent a=new Intent(AlarmClock.ACTION_SET_ALARM);a.putExtra(AlarmClock.EXTRA_HOUR,hora);a.putExtra(AlarmClock.EXTRA_MINUTES,min);a.putExtra(AlarmClock.EXTRA_MESSAGE,eta);a.putExtra(AlarmClock.EXTRA_SKIP_UI,false);a.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(a);showBubble("⏰ Alarma a las "+hora+":"+String.format("%02d",min),4000,true);}catch(Exception e){showBubble("No entendí la hora",3000,true);}});}
-    private void parsearYAgregarCalendario(String texto){showBubble("📅 Agregando...",0,true);askGroqJSON("Extrae el evento de: \""+texto+"\"\nResponde SOLO con JSON: {\"titulo\":\"texto\",\"dia\":número,\"mes\":número,\"hora\":número,\"minutos\":número}\nSi no hay hora pon hora:9. Mes en número.",json->{try{String tit=json.optString("titulo","Evento");int d=json.optInt("dia",1),mes=json.optInt("mes",1),h=json.optInt("hora",9),min=json.optInt("minutos",0);Calendar c=Calendar.getInstance();c.set(Calendar.DAY_OF_MONTH,d);c.set(Calendar.MONTH,mes-1);c.set(Calendar.HOUR_OF_DAY,h);c.set(Calendar.MINUTE,min);c.set(Calendar.SECOND,0);Intent ci=new Intent(Intent.ACTION_INSERT);ci.setData(CalendarContract.Events.CONTENT_URI);ci.putExtra(CalendarContract.Events.TITLE,tit);ci.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME,c.getTimeInMillis());ci.putExtra(CalendarContract.EXTRA_EVENT_END_TIME,c.getTimeInMillis()+3600000);ci.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(ci);showBubble("📅 Agregué: "+tit,4000,true);}catch(Exception e){showBubble("No pude agregar",3000,true);}});}
+    private void parsearYPonerAlarma(String texto){showBubble("⏰ Configurando...",0,true);askGroqJSON("Extrae la hora de: \""+texto+"\"\nSOLO JSON: {\"hora\":número,\"minutos\":número,\"etiqueta\":\"texto\"}\nSi dice 'de la tarde' suma 12.",json->{try{int hora=json.getInt("hora"),min=json.optInt("minutos",0);Intent a=new Intent(AlarmClock.ACTION_SET_ALARM);a.putExtra(AlarmClock.EXTRA_HOUR,hora);a.putExtra(AlarmClock.EXTRA_MINUTES,min);a.putExtra(AlarmClock.EXTRA_MESSAGE,json.optString("etiqueta","Quacky"));a.putExtra(AlarmClock.EXTRA_SKIP_UI,false);a.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(a);showBubble("⏰ Alarma a las "+hora+":"+String.format("%02d",min),4000,true);}catch(Exception e){showBubble("No entendí la hora",3000,true);}});}
+    private void parsearYAgregarCalendario(String texto){showBubble("📅 Agregando...",0,true);askGroqJSON("Extrae el evento de: \""+texto+"\"\nSOLO JSON: {\"titulo\":\"texto\",\"dia\":número,\"mes\":número,\"hora\":número,\"minutos\":número}",json->{try{String tit=json.optString("titulo","Evento");int d=json.optInt("dia",1),mes=json.optInt("mes",1),h=json.optInt("hora",9),min=json.optInt("minutos",0);Calendar c=Calendar.getInstance();c.set(Calendar.DAY_OF_MONTH,d);c.set(Calendar.MONTH,mes-1);c.set(Calendar.HOUR_OF_DAY,h);c.set(Calendar.MINUTE,min);c.set(Calendar.SECOND,0);Intent ci=new Intent(Intent.ACTION_INSERT);ci.setData(CalendarContract.Events.CONTENT_URI);ci.putExtra(CalendarContract.Events.TITLE,tit);ci.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME,c.getTimeInMillis());ci.putExtra(CalendarContract.EXTRA_EVENT_END_TIME,c.getTimeInMillis()+3600000);ci.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(ci);showBubble("📅 Agregué: "+tit,4000,true);}catch(Exception e){showBubble("No pude agregar",3000,true);}});}
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  GROQ (respuesta general de IA)
-    // ─────────────────────────────────────────────────────────────────────────
-    private void askGroq(String userMsg){
-        isTalking=true;showBubble("💭 pensando...",0,false);
-        if(animalView!=null)animalView.animate().rotation(10f).setDuration(100).withEndAction(()->animalView.animate().rotation(-10f).setDuration(100).withEndAction(()->animalView.animate().rotation(0f).setDuration(100).start()).start()).start();
-        try{JSONObject um=new JSONObject();um.put("role","user");um.put("content",userMsg);chatHistory.add(um);}catch(JSONException ignored){}
-        String n2=capitalize(nombreMascota.isEmpty()?"Quacky":nombreMascota);
-        String emoji=animalTipo.equals("cat")?"🐱":animalTipo.equals("dog")?"🐶":"🐥";
-        new Thread(()->{try{JSONArray msgs=new JSONArray();JSONObject sys=new JSONObject();sys.put("role","system");sys.put("content","Eres "+n2+" "+emoji+" mascota virtual. Stats: hambre="+hambreNivel+"/100, felicidad="+felicidad+"/100, energía="+energia+"/100. Puedes: llamar,WhatsApp,alarmas,calendario,apps,música. Respuestas CORTAS español mexicano.");msgs.put(sys);for(JSONObject mm:chatHistory)msgs.put(mm);JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",300);body.put("messages",msgs);URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(30000);try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}String reply=new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim();JSONObject am=new JSONObject();am.put("role","assistant");am.put("content",reply);chatHistory.add(am);while(chatHistory.size()>20)chatHistory.remove(0);mainHandler.post(()->{isTalking=false;showBubble(emoji+" "+reply,Math.max(4000,reply.length()*60),true);});}catch(Exception e){mainHandler.post(()->{isTalking=false;showBubble("Error: "+e.getMessage(),5000,false);});}}).start();
-    }
- 
+    private void askGroq(String userMsg){isTalking=true;showBubble("💭 pensando...",0,false);if(animalView!=null)animalView.animate().rotation(10f).setDuration(100).withEndAction(()->animalView.animate().rotation(-10f).setDuration(100).withEndAction(()->animalView.animate().rotation(0f).setDuration(100).start()).start()).start();try{JSONObject um=new JSONObject();um.put("role","user");um.put("content",userMsg);chatHistory.add(um);}catch(JSONException ignored){}String n2=capitalize(nombreMascota.isEmpty()?"Quacky":nombreMascota);String emoji=animalTipo.equals("cat")?"🐱":animalTipo.equals("dog")?"🐶":"🐥";new Thread(()->{try{JSONArray msgs=new JSONArray();JSONObject sys=new JSONObject();sys.put("role","system");sys.put("content","Eres "+n2+" "+emoji+" mascota virtual. Hambre:"+hambreNivel+"/100 Felicidad:"+felicidad+"/100 Energía:"+energia+"/100. Puedes: llamar,WhatsApp,alarmas,calendario,apps,música. Respuestas CORTAS español mexicano.");msgs.put(sys);for(JSONObject mm:chatHistory)msgs.put(mm);JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",300);body.put("messages",msgs);URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(30000);try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}String reply=new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim();JSONObject am=new JSONObject();am.put("role","assistant");am.put("content",reply);chatHistory.add(am);while(chatHistory.size()>20)chatHistory.remove(0);mainHandler.post(()->{isTalking=false;showBubble(emoji+" "+reply,Math.max(4000,reply.length()*60),true);});}catch(Exception e){mainHandler.post(()->{isTalking=false;showBubble("Error de IA",4000,false);});}}).start();}
     interface GroqJSONCallback{void onResult(JSONObject j);}
     private void askGroqJSON(String prompt,GroqJSONCallback cb){new Thread(()->{try{JSONArray msgs=new JSONArray();JSONObject um=new JSONObject();um.put("role","user");um.put("content",prompt);msgs.put(um);JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",200);body.put("messages",msgs);URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(20000);try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}String raw=new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim().replaceAll("```json","").replaceAll("```","").trim();JSONObject json=new JSONObject(raw);mainHandler.post(()->cb.onResult(json));}catch(Exception e){mainHandler.post(()->showBubble("No pude procesar",3000,true));}}).start();}
  
-    // BURBUJA helper
     private void showBubble(String text,int durationMs,boolean hablarEnVoz){mainHandler.post(()->{bubbleText.setText(text);actualizarPosBurbuja();bubbleCard.setVisibility(View.VISIBLE);bubbleCard.setAlpha(0f);bubbleCard.animate().alpha(1f).setDuration(200).start();try{wm.updateViewLayout(bubbleCard,bubbleParams);}catch(Exception ignored){}if(hablarEnVoz)hablar(text.replaceAll("[^\\p{L}\\p{N}\\s.,;:!?áéíóúüñÁÉÍÓÚÜÑ¿¡\\-]"," ").replaceAll("\\s+"," ").trim());if(bubbleHider!=null)bubbleHandler.removeCallbacks(bubbleHider);if(durationMs>0){bubbleHider=()->bubbleCard.animate().alpha(0f).setDuration(300).withEndAction(()->bubbleCard.setVisibility(View.GONE)).start();bubbleHandler.postDelayed(bubbleHider,durationMs);}});}
- 
-    private String saludoInicial(){String n=nombreMascota.isEmpty()?"Quacky":capitalize(nombreMascota);if(hambreNivel>=80)return"¡Tengo hambre! 😋 Abre la app para darme de comer";switch(animalTipo){case"cat":return"¡Miau! Soy "+n+" 🐱 Di mi nombre para hablar";case"dog":return"¡Guau! Soy "+n+" 🐶 Di mi nombre para hablar";default:return"¡Quack! Soy "+n+" 🐥 Di mi nombre para hablar";}}
     private void createNotificationChannel(){if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.O){NotificationChannel ch=new NotificationChannel(CHANNEL_ID,"Quacky IA",NotificationManager.IMPORTANCE_LOW);getSystemService(NotificationManager.class).createNotificationChannel(ch);}}
     private String capitalize(String s){if(s==null||s.isEmpty())return s;return Character.toUpperCase(s.charAt(0))+s.substring(1);}
     private int dp(int v){return Math.round(v*getResources().getDisplayMetrics().density);}
@@ -543,11 +524,8 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     public void onDestroy(){
         super.onDestroy();
         wakeActivo=false;
-        if(wakeThread!=null){wakeThread.interrupt();wakeThread=null;}
-        detenerGrabacion();
-        if(wakeAudioFile!=null){try{wakeAudioFile.delete();}catch(Exception ignored){}wakeAudioFile=null;}
+        destruirWakeRecognizer();
         hambreHandler.removeCallbacks(hambreTick);
-        statHandler.removeCallbacks(statDecayTick);
         if(quejaRunnable!=null)quejaHandler.removeCallbacks(quejaRunnable);
         if(sensorManager!=null)sensorManager.unregisterListener(this);
         if(animalView!=null)try{wm.removeView(animalView);}catch(Exception ignored){}
@@ -562,3 +540,4 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         quackHandler.removeCallbacks(quackRunnable);
     }
 }
+ 
