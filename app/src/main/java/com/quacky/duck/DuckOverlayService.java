@@ -49,6 +49,9 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private boolean          enComando    = false;
     private String           nombreMascota = "";
  
+    // ── Muerte ────────────────────────────────────────────────────────────────────
+    private boolean animalMuerto = false;
+ 
     // ── Hambre (Tamagotchi) ───────────────────────────────────────────────────
     private int      hambreNivel   = 0;
     private int      felicidad     = 70;
@@ -354,12 +357,50 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                 actualizarHambreEnAnimal();
                 guardarStats();
                 if(hambreNivel>=80&&quejaRunnable==null)activarQuejas();
+                if(hambreNivel>=100)mainHandler.post(()->activarMuerte());
             }
             hambreHandler.postDelayed(this,18_000L);
         }};
         hambreHandler.postDelayed(hambreTick,18_000L);
         actualizarHambreEnAnimal();
         if(hambreNivel>=80)activarQuejas();
+    }
+ 
+    private void activarMuerte() {
+        if (animalMuerto) return;
+        animalMuerto = true;
+        wakeActivo = false;
+        destruirWakeRecognizer();
+        // Detener movimiento — el animal se queda donde está
+        targetX = currentX; targetY = currentY;
+        // Detener sonidos
+        quackHandler.removeCallbacks(quackRunnable);
+        // Detener quejas
+        if (quejaRunnable != null) { quejaHandler.removeCallbacks(quejaRunnable); quejaRunnable = null; }
+        // Iniciar animación de muerte en el DuckView
+        if (animalView instanceof DuckView) ((DuckView) animalView).iniciarMuerte();
+        // Mensaje dramático
+        mainHandler.postDelayed(() -> showBubble("💀 Me morí de hambre... ¡Aliméntame en la app!", 0, true), 3000);
+        // Resucitar si le dan de comer (se procesa en procesarAlimentacion)
+    }
+ 
+    private void resucitar() {
+        if (!animalMuerto) return;
+        animalMuerto = false;
+        // El DuckView no tiene reset de muerte en tiempo de ejecución,
+        // así que reiniciamos la vista recreándola
+        mainHandler.post(() -> {
+            try {
+                // Quitar el animal muerto y crear uno nuevo
+                if (animalView != null) { wm.removeView(animalView); animalView = null; }
+                setupAnimalWindow();
+                showBubble("😊 ¡Reviviste! ¡Gracias por la comida! 🍖", 5000, true);
+            } catch (Exception e) {
+                showBubble("😊 ¡Gracias por la comida!", 4000, true);
+            }
+        });
+        // Reanudar wake word
+        mainHandler.postDelayed(this::iniciarCicloWake, 3000);
     }
  
     private void guardarStats(){
@@ -389,6 +430,8 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
  
     private void procesarAlimentacion(Intent datos){
+        // Si estaba muerto → resucitar primero
+        if (animalMuerto) { resucitar(); }
         if(estaComiendo) return;
         estaComiendo=true;
  
@@ -479,14 +522,14 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private void hablar(String texto){if(!ttsListo||tts==null)return;String l=texto.replaceAll("[^\\p{L}\\p{N}\\s.,;:!?áéíóúüñÁÉÍÓÚÜÑ¿¡\\-]"," ").replaceAll("\\s+"," ").trim();if(!l.isEmpty())tts.speak(l,TextToSpeech.QUEUE_FLUSH,null,"q_"+System.currentTimeMillis());}
  
     private void setupGyroscope(){sensorManager=(SensorManager)getSystemService(SENSOR_SERVICE);if(sensorManager==null)return;gyroSensor=sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);if(gyroSensor!=null)sensorManager.registerListener(this,gyroSensor,SensorManager.SENSOR_DELAY_GAME);else{Sensor a=sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);if(a!=null)sensorManager.registerListener(this,a,SensorManager.SENSOR_DELAY_GAME);}}
-    @Override public void onSensorChanged(SensorEvent e){if(estaComiendo)return;DisplayMetrics dm=getResources().getDisplayMetrics();int px=dp(DUCK_SIZE_DP);if(e.sensor.getType()==Sensor.TYPE_GYROSCOPE){float rx=e.values[0],ry=e.values[1];if(Math.abs(rx)<0.05f)rx=0f;if(Math.abs(ry)<0.05f)ry=0f;gyroVelX+=ry*GYRO_FORCE;gyroVelY+=rx*GYRO_FORCE;targetX=Math.max(0,Math.min(targetX+gyroVelX,dm.widthPixels-px));targetY=Math.max(0,Math.min(targetY+gyroVelY,dm.heightPixels-px));gyroVelX*=0.85f;gyroVelY*=0.85f;float dx=targetX-currentX,dy=targetY-currentY;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);}else if(e.sensor.getType()==Sensor.TYPE_ACCELEROMETER){float ax=-e.values[0],ay=e.values[1];if(Math.abs(ax)<0.3f)ax=0f;if(Math.abs(ay)<0.3f)ay=0f;targetX=Math.max(0,Math.min(targetX+ax*1.2f,dm.widthPixels-px));targetY=Math.max(0,Math.min(targetY-ay*1.2f,dm.heightPixels-px));float dx=targetX-currentX,dy=targetY-currentY;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);}}
+    @Override public void onSensorChanged(SensorEvent e){if(estaComiendo||animalMuerto)return;DisplayMetrics dm=getResources().getDisplayMetrics();int px=dp(DUCK_SIZE_DP);if(e.sensor.getType()==Sensor.TYPE_GYROSCOPE){float rx=e.values[0],ry=e.values[1];if(Math.abs(rx)<0.05f)rx=0f;if(Math.abs(ry)<0.05f)ry=0f;gyroVelX+=ry*GYRO_FORCE;gyroVelY+=rx*GYRO_FORCE;targetX=Math.max(0,Math.min(targetX+gyroVelX,dm.widthPixels-px));targetY=Math.max(0,Math.min(targetY+gyroVelY,dm.heightPixels-px));gyroVelX*=0.85f;gyroVelY*=0.85f;float dx=targetX-currentX,dy=targetY-currentY;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);}else if(e.sensor.getType()==Sensor.TYPE_ACCELEROMETER){float ax=-e.values[0],ay=e.values[1];if(Math.abs(ax)<0.3f)ax=0f;if(Math.abs(ay)<0.3f)ay=0f;targetX=Math.max(0,Math.min(targetX+ax*1.2f,dm.widthPixels-px));targetY=Math.max(0,Math.min(targetY-ay*1.2f,dm.heightPixels-px));float dx=targetX-currentX,dy=targetY-currentY;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);}}
     @Override public void onAccuracyChanged(Sensor s,int a){}
  
     private void setupFootprintOverlay(){DisplayMetrics dm=getResources().getDisplayMetrics();footprintOverlay=new View(this){private final Paint fp=new Paint(Paint.ANTI_ALIAS_FLAG);private final Path pt=new Path();@Override protected void onDraw(Canvas c){long now=System.currentTimeMillis();fp.setStyle(Paint.Style.FILL);synchronized(footprints){Iterator<Footprint>it=footprints.iterator();while(it.hasNext()){Footprint f=it.next();float age=(now-f.born)/(float)FOOTPRINT_LIFE;if(age>=1f){it.remove();continue;}fp.setColor(Color.argb((int)(140*(1f-age)),180,80,0));float s=dm.density*3.5f;c.save();c.translate(f.x,f.y);c.rotate(f.isLeft?-15f:15f);pt.reset();pt.moveTo(0,0);pt.lineTo(-s,s*.6f);pt.lineTo(-s*.4f,s*1.1f);pt.lineTo(s*.2f,s*.7f);pt.lineTo(s*.8f,s*1.1f);pt.lineTo(s*1.2f,s*.5f);pt.close();c.drawPath(pt,fp);c.restore();}}postInvalidateDelayed(60);}};footprintOverlay.setLayerType(View.LAYER_TYPE_SOFTWARE,null);WindowManager.LayoutParams p=new WindowManager.LayoutParams(dm.widthPixels,dm.heightPixels,overlayType,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE|WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,PixelFormat.TRANSLUCENT);p.gravity=Gravity.TOP|Gravity.START;wm.addView(footprintOverlay,p);}
  
     private void setupWalkAnimation(){walkAnim=new Runnable(){@Override public void run(){boolean m=isMoving()&&!estaComiendo;if(m){walkPhase+=0.05f;if(walkPhase>1f)walkPhase=0f;}setWalkState(m,walkPhase,facingRight?1f:-1f);walkHandler.postDelayed(this,25);}};walkHandler.post(walkAnim);}
     private boolean isMoving(){return Math.abs(targetX-currentX)>2||Math.abs(targetY-currentY)>2;}
-    private void startMoveLoop(){moveRunnable=new Runnable(){@Override public void run(){if(!estaComiendo){float dx=targetX-currentX,dy=targetY-currentY,dist=(float)Math.sqrt(dx*dx+dy*dy);if(dist>1.5f){float speed=Math.min(SPEED_BASE,Math.max(0.006f,dist/2000f));currentX+=dx*speed;currentY+=dy*speed;if(dx>0!=facingRight)facingRight=dx>0;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);animalParams.x=(int)currentX;animalParams.y=(int)currentY;try{wm.updateViewLayout(animalView,animalParams);}catch(Exception ignored){}actualizarPosBurbuja();float mx=currentX-lastFootX,my=currentY-lastFootY,moved=(float)Math.sqrt(mx*mx+my*my);long now=System.currentTimeMillis();if(moved>dp(20)&&(now-lastFootprintTime)>400){lastFootprintTime=now;lastFootX=currentX;lastFootY=currentY;float ox=nextFootLeft?-dp(4):dp(4);synchronized(footprints){footprints.add(new Footprint(currentX+dp(DUCK_SIZE_DP)/2f+ox,currentY+dp(DUCK_SIZE_DP)-dp(4),now,nextFootLeft));}nextFootLeft=!nextFootLeft;}}}mainHandler.postDelayed(this,16);}};mainHandler.post(moveRunnable);}
+    private void startMoveLoop(){moveRunnable=new Runnable(){@Override public void run(){if(!estaComiendo&&!animalMuerto){float dx=targetX-currentX,dy=targetY-currentY,dist=(float)Math.sqrt(dx*dx+dy*dy);if(dist>1.5f){float speed=Math.min(SPEED_BASE,Math.max(0.006f,dist/2000f));currentX+=dx*speed;currentY+=dy*speed;if(dx>0!=facingRight)facingRight=dx>0;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);animalParams.x=(int)currentX;animalParams.y=(int)currentY;try{wm.updateViewLayout(animalView,animalParams);}catch(Exception ignored){}actualizarPosBurbuja();float mx=currentX-lastFootX,my=currentY-lastFootY,moved=(float)Math.sqrt(mx*mx+my*my);long now=System.currentTimeMillis();if(moved>dp(20)&&(now-lastFootprintTime)>400){lastFootprintTime=now;lastFootX=currentX;lastFootY=currentY;float ox=nextFootLeft?-dp(4):dp(4);synchronized(footprints){footprints.add(new Footprint(currentX+dp(DUCK_SIZE_DP)/2f+ox,currentY+dp(DUCK_SIZE_DP)-dp(4),now,nextFootLeft));}nextFootLeft=!nextFootLeft;}}}mainHandler.postDelayed(this,16);}};mainHandler.post(moveRunnable);}
  
     private void startRandomSounds(){quackRunnable=new Runnable(){@Override public void run(){if(!isListening&&!isTalking&&!estaComiendo)playAnimalSound();quackHandler.postDelayed(this,15000+rng.nextInt(30000));}};quackHandler.postDelayed(quackRunnable,8000+rng.nextInt(10000));}
     private void playAnimalSound(){switch(animalTipo){case"cat":playSoundCat();break;case"dog":playSoundDog();break;default:playSoundDuck();}}
