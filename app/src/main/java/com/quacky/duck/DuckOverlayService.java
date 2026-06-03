@@ -575,21 +575,495 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private void playRaw(short[]s,int sr,int d)throws Exception{AudioTrack t=new AudioTrack.Builder().setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()).setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sr).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build()).setBufferSizeInBytes(s.length*2).setTransferMode(AudioTrack.MODE_STATIC).build();t.write(s,0,s.length);t.play();Thread.sleep(d+80);t.stop();t.release();}
     private void animarSalto(){if(animalView!=null)animalView.animate().translationY(-10f).setDuration(130).withEndAction(()->animalView.animate().translationY(0).setDuration(130).start()).start();}
  
-    private boolean handleVoiceCommand(String texto){String lower=texto.toLowerCase().trim();if(lower.contains("alarma")||lower.contains("despiértame")||lower.contains("despertador")){parsearYPonerAlarma(texto);return true;}if(lower.contains("calendario")||lower.contains("recuérdame")||lower.contains("recordame")||lower.contains("cumpleaños de")||lower.contains("agrega")){parsearYAgregarCalendario(texto);return true;}if((lower.contains("whatsapp")||lower.contains("wsp")||lower.contains("wasap"))&&(lower.contains("llama")||lower.contains("videollamada"))){llamarPorWhatsApp(extraerNombre(lower,texto));return true;}if(lower.contains("whatsapp")||lower.contains("wsp")||lower.contains("wasap")){abrirWhatsAppChat(extraerNombre(lower,texto),extraerMensaje(lower,texto));return true;}if(lower.contains("pon la canción")||lower.contains("reproduce")||lower.contains("quiero escuchar")||lower.contains("ponme")||lower.contains("pon música de")){pedirYReproducirCancion(texto);return true;}if(lower.contains("pon música")||lower.contains("abre spotify")||lower.contains("pon spotify")||lower.contains("abre tidal")){abrirAppMusica(detectarAppMusica(lower),null);return true;}for(String p:new String[]{"marcale a ","llama a ","llámale a ","llamar a ","marcar a ","marca a "}){if(lower.contains(p)&&!lower.contains("whatsapp")&&!lower.contains("wsp")){buscarYLlamar(texto.substring(lower.indexOf(p)+p.length()).trim().replace(" por favor","").trim());return true;}}if(lower.startsWith("abre ")||lower.startsWith("abrir ")||lower.contains("abre la ")){abrirAppDinamica(lower.replace("abre la app de","").replace("abre la ","").replace("abrir la ","").replace("abre ","").replace("abrir ","").trim());return true;}return false;}
-    private String extraerNombre(String lower,String texto){String[]ps={"whatsapp a ","wsp a ","wasap a ","manda whatsapp a ","mándale whatsapp a ","llama a ","llámale a ","videollamada a ","mensaje a "};for(String p:ps)if(lower.contains(p)){int idx=lower.indexOf(p)+p.length();String n=texto.substring(idx).trim();for(String c:new String[]{" por whatsapp"," un mensaje"," diciéndole"," diciendo"," que le"," con el mensaje"," que diga"}){int pos=n.toLowerCase().indexOf(c);if(pos>0)n=n.substring(0,pos);}return n.replace(" por favor","").trim();}return"";}
-    private String extraerMensaje(String lower,String texto){for(String m:new String[]{"diciéndole ","que diga ","con el mensaje ","diciendo ","el mensaje "}){if(lower.contains(m)){int idx=lower.indexOf(m)+m.length();return texto.substring(idx).trim().replace(" por favor","").trim();}}return"";}
-    private void abrirWhatsAppChat(String nombre,String mensaje){if(nombre.isEmpty()){showBubble("¿A quién le escribo?",3000,true);return;}showBubble("🔍 Buscando a "+nombre+"...",0,true);new Thread(()->{String tel=buscarTelefono(nombre);mainHandler.post(()->{if(tel!=null){String num=tel.replaceAll("[^0-9]","");if(!num.startsWith("52")&&num.length()==10)num="52"+num;String url="https://wa.me/"+num+(mensaje.isEmpty()?"":"?text="+Uri.encode(mensaje));showBubble("💬 Chat de "+nombre,4000,true);boolean ok=false;try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse(url));wa.setPackage("com.whatsapp");wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);ok=true;}catch(Exception ignored){}if(!ok)try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse(url));wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);}catch(Exception ignored){}}else showBubble("No encontré a "+nombre,3500,true);});}).start();}
-    private void llamarPorWhatsApp(String nombre){if(nombre.isEmpty()){showBubble("¿A quién llamo?",3000,true);return;}new Thread(()->{String tel=buscarTelefono(nombre);mainHandler.post(()->{if(tel!=null){String num=tel.replaceAll("[^0-9]","");if(!num.startsWith("52")&&num.length()==10)num="52"+num;try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse("whatsapp://call?number=+"+num));wa.setPackage("com.whatsapp");wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);}catch(Exception ignored){try{Intent wa=new Intent(Intent.ACTION_VIEW,Uri.parse("https://wa.me/"+num));wa.setPackage("com.whatsapp");wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(wa);}catch(Exception ignored2){}}}else showBubble("No encontré a "+nombre,3500,true);});}).start();}
-    private void buscarYLlamar(String nombre){new Thread(()->{String tel=buscarTelefono(nombre);mainHandler.post(()->{if(tel!=null){try{Intent l=new Intent(Intent.ACTION_CALL);l.setData(Uri.parse("tel:"+tel));l.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(l);}catch(SecurityException e){showBubble("Necesito permiso de Teléfono",5000,true);};}else showBubble("No encontré a "+nombre,3500,true);});}).start();}
-    private String buscarTelefono(String nombre){try{android.database.Cursor c=getContentResolver().query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI,new String[]{ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,ContactsContract.CommonDataKinds.Phone.NUMBER},null,null,null);if(c==null)return null;String buscar=nombre.toLowerCase().trim(),mejor=null;int mejorP=0;while(c.moveToNext()){String nc=c.getString(0),tel=c.getString(1);if(nc==null||tel==null)continue;String nl=nc.toLowerCase().trim();if(nl.equals(buscar)){c.close();return tel.replaceAll("[^+0-9]","");}int p=nl.contains(buscar)?2:buscar.contains(nl)?1:0;if(p>mejorP){mejorP=p;mejor=tel.replaceAll("[^+0-9]","");}}c.close();return mejor;}catch(Exception e){return null;}}
-    private void pedirYReproducirCancion(String texto){String cancion=texto.toLowerCase().replace("pon la canción","").replace("reproduce","").replace("ponme","").replace("quiero escuchar","").replace("pon música de","").replace("en spotify","").replace("en tidal","").replace("en qobuz","").trim();String app=detectarAppMusica(texto.toLowerCase());String guardada=getSharedPreferences("quacky_prefs",MODE_PRIVATE).getString("app_musica","");if(!app.equals("spotify")||texto.toLowerCase().contains("spotify")){getSharedPreferences("quacky_prefs",MODE_PRIVATE).edit().putString("app_musica",app).apply();abrirAppMusica(app,cancion);}else if(!guardada.isEmpty())abrirAppMusica(guardada,cancion);else showBubble("🎵 ¿En qué app?",5000,true);}
-    private String detectarAppMusica(String l){if(l.contains("tidal"))return"tidal";if(l.contains("qobuz"))return"qobuz";if(l.contains("youtube music")||l.contains("yt music"))return"youtube_music";if(l.contains("deezer"))return"deezer";if(l.contains("amazon music"))return"amazon_music";return"spotify";}
-    private void abrirAppMusica(String app,String cancion){String paquete,nombre;switch(app){case"tidal":paquete="com.aspiro.tidal";nombre="Tidal";break;case"qobuz":paquete="com.qobuz.music";nombre="Qobuz";break;case"youtube_music":paquete="com.google.android.apps.youtube.music";nombre="YouTube Music";break;case"deezer":paquete="deezer.android.app";nombre="Deezer";break;case"amazon_music":paquete="com.amazon.mp3";nombre="Amazon Music";break;default:paquete="com.spotify.music";nombre="Spotify";}try{Intent i=null;if(cancion!=null&&!cancion.isEmpty()&&app.equals("spotify"))i=new Intent(Intent.ACTION_VIEW,Uri.parse("spotify:search:"+Uri.encode(cancion)));if(i==null)i=getPackageManager().getLaunchIntentForPackage(paquete);if(i!=null){i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(i);}}catch(Exception e){showBubble("No pude abrir "+nombre,3000,false);}}
-    private void abrirAppDinamica(String nombre){Map<String,String>m=new HashMap<>();m.put("spotify","com.spotify.music");m.put("whatsapp","com.whatsapp");m.put("instagram","com.instagram.android");m.put("facebook","com.facebook.katana");m.put("twitter","com.twitter.android");m.put("x","com.twitter.android");m.put("tiktok","com.zhiliaoapp.musically");m.put("youtube","com.google.android.youtube");m.put("maps","com.google.android.apps.maps");m.put("gmail","com.google.android.gm");m.put("chrome","com.android.chrome");m.put("netflix","com.netflix.mediaclient");m.put("uber","com.ubercab");m.put("tidal","com.aspiro.tidal");m.put("telegram","org.telegram.messenger");m.put("snapchat","com.snapchat.android");m.put("zoom","us.zoom.videomeetings");String pkg=m.get(nombre.toLowerCase().trim());if(pkg!=null){try{Intent i=getPackageManager().getLaunchIntentForPackage(pkg);if(i!=null){i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);showBubble("📱 Abriendo "+nombre+"...",2000,true);startActivity(i);return;}}catch(Exception ignored){}}try{Intent main=new Intent(Intent.ACTION_MAIN);main.addCategory(Intent.CATEGORY_LAUNCHER);List<ResolveInfo>apps=getPackageManager().queryIntentActivities(main,0);String buscar=nombre.toLowerCase().trim();for(ResolveInfo app:apps){String label=app.loadLabel(getPackageManager()).toString().toLowerCase().trim();if(label.contains(buscar)||buscar.contains(label)){Intent i=new Intent(Intent.ACTION_MAIN);i.setComponent(new android.content.ComponentName(app.activityInfo.packageName,app.activityInfo.name));i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);showBubble("📱 Abriendo "+app.loadLabel(getPackageManager())+"...",2000,true);startActivity(i);return;}}}catch(Exception ignored){}showBubble("No encontré \""+nombre+"\"",3000,true);}
-    private void parsearYPonerAlarma(String texto){showBubble("⏰ Configurando...",0,true);askGroqJSON("Extrae la hora de: \""+texto+"\"\nSOLO JSON: {\"hora\":número,\"minutos\":número,\"etiqueta\":\"texto\"}\nSi dice 'de la tarde' suma 12.",json->{try{int hora=json.getInt("hora"),min=json.optInt("minutos",0);Intent a=new Intent(AlarmClock.ACTION_SET_ALARM);a.putExtra(AlarmClock.EXTRA_HOUR,hora);a.putExtra(AlarmClock.EXTRA_MINUTES,min);a.putExtra(AlarmClock.EXTRA_MESSAGE,json.optString("etiqueta","Quacky"));a.putExtra(AlarmClock.EXTRA_SKIP_UI,false);a.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(a);showBubble("⏰ Alarma a las "+hora+":"+String.format("%02d",min),4000,true);}catch(Exception e){showBubble("No entendí la hora",3000,true);}});}
-    private void parsearYAgregarCalendario(String texto){showBubble("📅 Agregando...",0,true);askGroqJSON("Extrae el evento de: \""+texto+"\"\nSOLO JSON: {\"titulo\":\"texto\",\"dia\":número,\"mes\":número,\"hora\":número,\"minutos\":número}",json->{try{String tit=json.optString("titulo","Evento");int d=json.optInt("dia",1),mes=json.optInt("mes",1),h=json.optInt("hora",9),min=json.optInt("minutos",0);Calendar c=Calendar.getInstance();c.set(Calendar.DAY_OF_MONTH,d);c.set(Calendar.MONTH,mes-1);c.set(Calendar.HOUR_OF_DAY,h);c.set(Calendar.MINUTE,min);c.set(Calendar.SECOND,0);Intent ci=new Intent(Intent.ACTION_INSERT);ci.setData(CalendarContract.Events.CONTENT_URI);ci.putExtra(CalendarContract.Events.TITLE,tit);ci.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME,c.getTimeInMillis());ci.putExtra(CalendarContract.EXTRA_EVENT_END_TIME,c.getTimeInMillis()+3600000);ci.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(ci);showBubble("📅 Agregué: "+tit,4000,true);}catch(Exception e){showBubble("No pude agregar",3000,true);}});}
+    // ═════════════════════════════════════════════════════════════════════════
+    //  SISTEMA DE COMANDOS DE VOZ
+    //  Orden de detección: música → alarma → calendario → WhatsApp → SMS →
+    //  llamada → abrir app → Groq IA para todo lo demás
+    // ═════════════════════════════════════════════════════════════════════════
+    private boolean handleVoiceCommand(String texto) {
+        String lower = texto.toLowerCase().trim();
  
-    private void askGroq(String userMsg){isTalking=true;showBubble("💭 pensando...",0,false);if(animalView!=null)animalView.animate().rotation(10f).setDuration(100).withEndAction(()->animalView.animate().rotation(-10f).setDuration(100).withEndAction(()->animalView.animate().rotation(0f).setDuration(100).start()).start()).start();try{JSONObject um=new JSONObject();um.put("role","user");um.put("content",userMsg);chatHistory.add(um);}catch(JSONException ignored){}String n2=capitalize(nombreMascota.isEmpty()?"Quacky":nombreMascota);String emoji=animalTipo.equals("cat")?"🐱":animalTipo.equals("dog")?"🐶":"🐥";new Thread(()->{try{JSONArray msgs=new JSONArray();JSONObject sys=new JSONObject();sys.put("role","system");sys.put("content","Eres "+n2+" "+emoji+" mascota virtual. Hambre:"+hambreNivel+"/100 Felicidad:"+felicidad+"/100 Energía:"+energia+"/100. Puedes: llamar,WhatsApp,alarmas,calendario,apps,música. Respuestas CORTAS español mexicano.");msgs.put(sys);for(JSONObject mm:chatHistory)msgs.put(mm);JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",300);body.put("messages",msgs);URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(30000);try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}String reply=new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim();JSONObject am=new JSONObject();am.put("role","assistant");am.put("content",reply);chatHistory.add(am);while(chatHistory.size()>20)chatHistory.remove(0);mainHandler.post(()->{isTalking=false;showBubble(emoji+" "+reply,Math.max(4000,reply.length()*60),true);});}catch(Exception e){mainHandler.post(()->{isTalking=false;showBubble("Error de IA",4000,false);});}}).start();}
+        // ── MÚSICA ────────────────────────────────────────────────────────
+        boolean esMusica = lower.contains("reproduce") || lower.contains("pon la canción")
+            || lower.contains("quiero escuchar") || lower.contains("ponme")
+            || lower.contains("pon música") || lower.contains("pon musica")
+            || lower.contains("abre spotify") || lower.contains("pon spotify")
+            || lower.contains("abre tidal") || lower.contains("abre youtube music")
+            || lower.contains("abre apple music");
+        if (esMusica) { pedirYReproducirCancion(texto); return true; }
+ 
+        // ── ALARMA ────────────────────────────────────────────────────────
+        if (lower.contains("alarma") || lower.contains("despiértame")
+                || lower.contains("despertador") || lower.contains("ponme alarma")
+                || lower.contains("pon alarma")) {
+            parsearYPonerAlarma(texto); return true;
+        }
+ 
+        // ── CALENDARIO ────────────────────────────────────────────────────
+        if (lower.contains("recuérdame") || lower.contains("recordame")
+                || lower.contains("cumpleaños de") || lower.contains("agenda")
+                || lower.contains("calendario") || lower.contains("anota")
+                || (lower.contains("agrega") && !lower.contains("contacto"))) {
+            parsearYAgregarCalendario(texto); return true;
+        }
+ 
+        // ── LLAMADA WHATSAPP ──────────────────────────────────────────────
+        if ((lower.contains("whatsapp") || lower.contains("wsp") || lower.contains("wasap"))
+                && (lower.contains("llama") || lower.contains("videollamada"))) {
+            llamarPorWhatsApp(extraerContacto(lower, texto)); return true;
+        }
+ 
+        // ── MENSAJE WHATSAPP ──────────────────────────────────────────────
+        if (lower.contains("whatsapp") || lower.contains("wsp") || lower.contains("wasap")
+                || lower.contains("manda un whats") || lower.contains("mándale")) {
+            String nombre  = extraerContacto(lower, texto);
+            String mensaje = extraerMensaje(lower, texto);
+            enviarPorWhatsApp(nombre, mensaje); return true;
+        }
+ 
+        // ── SMS (mensaje de texto normal) ─────────────────────────────────
+        if ((lower.contains("manda") || lower.contains("envía") || lower.contains("envia"))
+                && (lower.contains("mensaje") || lower.contains("sms") || lower.contains("texto"))
+                && !lower.contains("whatsapp")) {
+            String nombre  = extraerContacto(lower, texto);
+            String mensaje = extraerMensaje(lower, texto);
+            enviarSMS(nombre, mensaje); return true;
+        }
+ 
+        // ── LLAMADA NORMAL ────────────────────────────────────────────────
+        for (String p : new String[]{"llama a ","llámale a ","marcale a ","marca a ","llamar a ","marcar a "}) {
+            if (lower.contains(p) && !lower.contains("whatsapp") && !lower.contains("wsp")) {
+                buscarYLlamar(limpiarFin(texto.substring(lower.indexOf(p)+p.length()))); return true;
+            }
+        }
+ 
+        // ── ABRIR APP ─────────────────────────────────────────────────────
+        if (lower.startsWith("abre ") || lower.startsWith("abrir ")
+                || lower.contains("abre la ") || lower.contains("abre el ")) {
+            String app = lower.replace("abre la app de","").replace("abre la app","")
+                .replace("abre el ","").replace("abre la ","").replace("abrir la ","")
+                .replace("abre ","").replace("abrir ","").trim();
+            abrirAppDinamica(app); return true;
+        }
+ 
+        return false; // → Groq maneja el resto
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  MÚSICA — detecta app y canción por separado
+    // ─────────────────────────────────────────────────────────────────────────
+    private void pedirYReproducirCancion(String texto) {
+        String lower = texto.toLowerCase();
+ 
+        // 1. Detectar app
+        String app = detectarAppMusica(lower);
+ 
+        // 2. Extraer nombre de canción/artista quitando TODOS los keywords
+        String cancion = lower
+            .replace("reproduce","").replace("pon la canción","").replace("pon la cancion","")
+            .replace("quiero escuchar","").replace("ponme","").replace("pon música","")
+            .replace("pon musica","").replace("pon música de","").replace("pon musica de","")
+            // quitar nombre de app
+            .replace("en spotify","").replace("spotify","")
+            .replace("en tidal","").replace("tidal","")
+            .replace("en youtube music","").replace("youtube music","").replace("yt music","")
+            .replace("en apple music","").replace("apple music","")
+            .replace("en youtube","").replace("youtube","")
+            .replace("en deezer","").replace("deezer","")
+            .replace("en amazon music","").replace("amazon music","")
+            .replace("música","").replace("musica","")
+            .replace("por favor","")
+            .replaceAll("\\s+"," ").trim();
+ 
+        if (cancion.isEmpty() || cancion.length() < 2) cancion = null;
+ 
+        // 3. Guardar preferencia de app
+        if (!app.equals("spotify") || lower.contains("spotify")) {
+            getSharedPreferences("quacky_prefs",MODE_PRIVATE).edit()
+                .putString("app_musica",app).apply();
+        } else {
+            String guardada = getSharedPreferences("quacky_prefs",MODE_PRIVATE)
+                .getString("app_musica","spotify");
+            app = guardada;
+        }
+ 
+        abrirAppMusica(app, cancion);
+    }
+ 
+    private String detectarAppMusica(String l) {
+        if (l.contains("tidal"))                       return "tidal";
+        if (l.contains("qobuz"))                       return "qobuz";
+        if (l.contains("youtube music")||l.contains("yt music")) return "youtube_music";
+        if (l.contains("youtube"))                     return "youtube_music";
+        if (l.contains("apple music"))                 return "apple_music";
+        if (l.contains("deezer"))                      return "deezer";
+        if (l.contains("amazon music"))                return "amazon_music";
+        return "spotify";
+    }
+ 
+    private void abrirAppMusica(String app, String cancion) {
+        String paquete, nombre;
+        switch (app) {
+            case "tidal":        paquete="com.aspiro.tidal";                          nombre="Tidal";         break;
+            case "qobuz":        paquete="com.qobuz.music";                           nombre="Qobuz";         break;
+            case "youtube_music":paquete="com.google.android.apps.youtube.music";     nombre="YouTube Music"; break;
+            case "apple_music":  paquete="com.apple.android.music";                   nombre="Apple Music";   break;
+            case "deezer":       paquete="deezer.android.app";                        nombre="Deezer";        break;
+            case "amazon_music": paquete="com.amazon.mp3";                            nombre="Amazon Music";  break;
+            default:             paquete="com.spotify.music";                         nombre="Spotify";       break;
+        }
+ 
+        String msg = cancion!=null ? "🎵 Buscando \""+cancion+"\" en "+nombre+"..." : "🎵 Abriendo "+nombre+"...";
+        showBubble(msg, 4000, true);
+ 
+        try {
+            Intent i = null;
+            // Intento con canción
+            if (cancion != null && !cancion.isEmpty()) {
+                if (app.equals("spotify"))
+                    i = new Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:"+Uri.encode(cancion)));
+                else if (app.equals("youtube_music"))
+                    i = new Intent(Intent.ACTION_SEARCH);
+            }
+            // Intento de lanzar app directamente
+            if (i == null) i = getPackageManager().getLaunchIntentForPackage(paquete);
+            if (i != null) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+                return;
+            }
+        } catch (Exception ignored) {}
+ 
+        // Fallback: abrir en Play Store
+        try {
+            Intent store = new Intent(Intent.ACTION_VIEW,
+                Uri.parse("market://details?id="+paquete));
+            store.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(store);
+            showBubble(nombre+" no instalado — abriendo Play Store 📲", 4000, true);
+        } catch (Exception e) {
+            showBubble("No pude abrir "+nombre+" 😔", 3000, false);
+        }
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  LLAMADAS
+    // ─────────────────────────────────────────────────────────────────────────
+    private void buscarYLlamar(String nombre) {
+        if (nombre.isEmpty()) { showBubble("¿A quién quieres llamar? 📞",3000,true); return; }
+        showBubble("📞 Buscando a " + nombre + "...", 0, true);
+        new Thread(() -> {
+            String tel = buscarTelefono(nombre);
+            mainHandler.post(() -> {
+                if (tel != null) {
+                    showBubble("📞 Llamando a " + nombre + "...", 4000, true);
+                    try {
+                        Intent l = new Intent(Intent.ACTION_CALL);
+                        l.setData(Uri.parse("tel:" + tel));
+                        l.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(l);
+                    } catch (SecurityException e) {
+                        // Sin permiso → usar DIAL (abre el marcador)
+                        try {
+                            Intent d = new Intent(Intent.ACTION_DIAL);
+                            d.setData(Uri.parse("tel:" + tel));
+                            d.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(d);
+                        } catch (Exception ex) {
+                            showBubble("No pude marcar — ve a Permisos en la app 📱", 4000, true);
+                        }
+                    }
+                } else {
+                    showBubble("No encontré a " + nombre + " en tus contactos 😔", 3500, true);
+                }
+            });
+        }).start();
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  WHATSAPP
+    // ─────────────────────────────────────────────────────────────────────────
+    private void enviarPorWhatsApp(String nombre, String mensaje) {
+        if (nombre.isEmpty()) { showBubble("¿A quién le mando el WhatsApp?",3000,true); return; }
+        showBubble("🔍 Buscando a " + nombre + "...", 0, true);
+        new Thread(() -> {
+            String tel = buscarTelefono(nombre);
+            mainHandler.post(() -> {
+                if (tel != null) {
+                    String num = tel.replaceAll("[^0-9]","");
+                    if (!num.startsWith("52") && num.length()==10) num = "52"+num;
+                    String url = "https://wa.me/"+num + (mensaje.isEmpty() ? "" : "?text="+Uri.encode(mensaje));
+                    String display = mensaje.isEmpty()
+                        ? "💬 Abriendo chat de "+nombre+" en WhatsApp..."
+                        : "💬 Enviando a "+nombre+": \""+mensaje+"\"";
+                    showBubble(display, 4000, true);
+                    try {
+                        Intent wa = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                        wa.setPackage("com.whatsapp");
+                        wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(wa);
+                    } catch (Exception e) {
+                        try {
+                            // WhatsApp Business
+                            Intent wa2 = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                            wa2.setPackage("com.whatsapp.w4b");
+                            wa2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(wa2);
+                        } catch (Exception e2) {
+                            showBubble("WhatsApp no está instalado 📱", 3000, true);
+                        }
+                    }
+                } else {
+                    showBubble("No encontré a " + nombre + " en tus contactos 😔", 3500, true);
+                }
+            });
+        }).start();
+    }
+ 
+    private void llamarPorWhatsApp(String nombre) {
+        if (nombre.isEmpty()) { showBubble("¿A quién llamo por WhatsApp? 📱",3000,true); return; }
+        showBubble("📱 Buscando a " + nombre + "...", 0, true);
+        new Thread(() -> {
+            String tel = buscarTelefono(nombre);
+            mainHandler.post(() -> {
+                if (tel != null) {
+                    String num = tel.replaceAll("[^0-9]","");
+                    if (!num.startsWith("52") && num.length()==10) num = "52"+num;
+                    showBubble("📱 Llamando a "+nombre+" por WhatsApp...", 4000, true);
+                    try {
+                        Intent wa = new Intent(Intent.ACTION_VIEW,
+                            Uri.parse("whatsapp://call?number=+" + num));
+                        wa.setPackage("com.whatsapp");
+                        wa.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(wa);
+                    } catch (Exception e) {
+                        // Fallback: abrir chat y decirle que llame
+                        enviarPorWhatsApp(nombre, "");
+                        showBubble("Abrí el chat — toca el ícono de llamada 📞", 5000, true);
+                    }
+                } else {
+                    showBubble("No encontré a "+nombre+" en contactos 😔", 3500, true);
+                }
+            });
+        }).start();
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SMS
+    // ─────────────────────────────────────────────────────────────────────────
+    private void enviarSMS(String nombre, String mensaje) {
+        if (nombre.isEmpty()) { showBubble("¿A quién le mando el mensaje?",3000,true); return; }
+        showBubble("📱 Buscando a " + nombre + "...", 0, true);
+        new Thread(() -> {
+            String tel = buscarTelefono(nombre);
+            mainHandler.post(() -> {
+                if (tel != null) {
+                    showBubble("✉️ Abriendo mensaje para "+nombre+"...", 3000, true);
+                    try {
+                        Intent sms = new Intent(Intent.ACTION_SENDTO);
+                        sms.setData(Uri.parse("smsto:" + tel));
+                        if (!mensaje.isEmpty()) sms.putExtra("sms_body", mensaje);
+                        sms.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(sms);
+                    } catch (Exception e) {
+                        showBubble("No pude abrir la app de mensajes 😔", 3000, true);
+                    }
+                } else {
+                    showBubble("No encontré a "+nombre+" en contactos 😔", 3500, true);
+                }
+            });
+        }).start();
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  ALARMA
+    // ─────────────────────────────────────────────────────────────────────────
+    private void parsearYPonerAlarma(String texto) {
+        showBubble("⏰ Configurando alarma...", 0, true);
+        askGroqJSON(
+            "Extrae la hora del texto: \"" + texto + "\"\n"
+            + "Responde SOLO con JSON sin explicación: {\"hora\":NÚMERO,\"minutos\":NÚMERO,\"etiqueta\":\"TEXTO\"}\n"
+            + "Reglas: 'de la tarde/noche' suma 12 a hora si < 12. 'y media' = minutos 30. "
+            + "'al cuarto' = minutos 15. 'en punto' = minutos 0. Ejemplo: '7 y media de la mañana' → {\"hora\":7,\"minutos\":30}",
+            json -> {
+                try {
+                    int hora = json.getInt("hora");
+                    int min  = json.optInt("minutos", 0);
+                    String etiqueta = json.optString("etiqueta", "Quacky IA");
+                    Intent a = new Intent(AlarmClock.ACTION_SET_ALARM);
+                    a.putExtra(AlarmClock.EXTRA_HOUR,    hora);
+                    a.putExtra(AlarmClock.EXTRA_MINUTES, min);
+                    a.putExtra(AlarmClock.EXTRA_MESSAGE, etiqueta);
+                    a.putExtra(AlarmClock.EXTRA_SKIP_UI, false);
+                    a.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(a);
+                    showBubble("⏰ Alarma puesta a las " + hora + ":" + String.format("%02d",min), 5000, true);
+                } catch (Exception e) {
+                    showBubble("No entendí la hora — di algo como 'a las 7 de la mañana' ⏰", 4000, true);
+                }
+            });
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  CALENDARIO
+    // ─────────────────────────────────────────────────────────────────────────
+    private void parsearYAgregarCalendario(String texto) {
+        showBubble("📅 Agregando al calendario...", 0, true);
+        askGroqJSON(
+            "Extrae el evento del texto: \"" + texto + "\"\n"
+            + "Responde SOLO con JSON: {\"titulo\":\"TEXTO\",\"dia\":NÚMERO,\"mes\":NÚMERO,\"año\":NÚMERO,\"hora\":NÚMERO,\"minutos\":NÚMERO}\n"
+            + "Si no hay hora usa 9. Si no hay año usa el año actual. Mes en número (enero=1).",
+            json -> {
+                try {
+                    String tit = json.optString("titulo", "Evento");
+                    int d   = json.optInt("dia",  1);
+                    int mes = json.optInt("mes",  1);
+                    int año = json.optInt("año",  java.util.Calendar.getInstance().get(java.util.Calendar.YEAR));
+                    int h   = json.optInt("hora", 9);
+                    int min = json.optInt("minutos", 0);
+                    java.util.Calendar c = java.util.Calendar.getInstance();
+                    c.set(año, mes-1, d, h, min, 0);
+                    Intent ci = new Intent(Intent.ACTION_INSERT);
+                    ci.setData(CalendarContract.Events.CONTENT_URI);
+                    ci.putExtra(CalendarContract.Events.TITLE, tit);
+                    ci.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, c.getTimeInMillis());
+                    ci.putExtra(CalendarContract.EXTRA_EVENT_END_TIME,   c.getTimeInMillis()+3600000);
+                    ci.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(ci);
+                    showBubble("📅 Guardé: \""+tit+"\" el "+d+"/"+mes+"/"+año, 5000, true);
+                } catch (Exception e) {
+                    showBubble("No pude agregar al calendario — intenta con más detalle 📅", 4000, true);
+                }
+            });
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  ABRIR APP
+    // ─────────────────────────────────────────────────────────────────────────
+    private void abrirAppDinamica(String nombre) {
+        if (nombre.isEmpty()) return;
+        // Mapa de apps conocidas
+        Map<String,String> mapa = new HashMap<>();
+        mapa.put("spotify","com.spotify.music");       mapa.put("whatsapp","com.whatsapp");
+        mapa.put("instagram","com.instagram.android"); mapa.put("facebook","com.facebook.katana");
+        mapa.put("twitter","com.twitter.android");     mapa.put("x","com.twitter.android");
+        mapa.put("tiktok","com.zhiliaoapp.musically"); mapa.put("youtube","com.google.android.youtube");
+        mapa.put("maps","com.google.android.apps.maps");mapa.put("gmail","com.google.android.gm");
+        mapa.put("chrome","com.android.chrome");       mapa.put("netflix","com.netflix.mediaclient");
+        mapa.put("uber","com.ubercab");                mapa.put("tidal","com.aspiro.tidal");
+        mapa.put("telegram","org.telegram.messenger"); mapa.put("snapchat","com.snapchat.android");
+        mapa.put("zoom","us.zoom.videomeetings");      mapa.put("apple music","com.apple.android.music");
+        mapa.put("youtube music","com.google.android.apps.youtube.music");
+        mapa.put("deezer","deezer.android.app");       mapa.put("amazon music","com.amazon.mp3");
+        mapa.put("calculadora","com.google.android.calculator");
+        mapa.put("camara","com.google.android.GoogleCamera");
+        mapa.put("cámara","com.google.android.GoogleCamera");
+ 
+        String pkg = mapa.get(nombre.toLowerCase().trim());
+        if (pkg != null) {
+            try {
+                Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+                if (i != null) {
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    showBubble("📱 Abriendo " + capitalize(nombre) + "...", 2000, true);
+                    startActivity(i); return;
+                }
+            } catch (Exception ignored) {}
+        }
+        // Búsqueda dinámica entre todas las apps instaladas
+        try {
+            Intent main = new Intent(Intent.ACTION_MAIN);
+            main.addCategory(Intent.CATEGORY_LAUNCHER);
+            List<ResolveInfo> apps = getPackageManager().queryIntentActivities(main, 0);
+            String buscar = nombre.toLowerCase().trim();
+            for (ResolveInfo app : apps) {
+                String label = app.loadLabel(getPackageManager()).toString().toLowerCase().trim();
+                if (label.contains(buscar) || buscar.contains(label)) {
+                    Intent i = new Intent(Intent.ACTION_MAIN);
+                    i.setComponent(new android.content.ComponentName(
+                        app.activityInfo.packageName, app.activityInfo.name));
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    showBubble("📱 Abriendo "+app.loadLabel(getPackageManager())+"...", 2000, true);
+                    startActivity(i); return;
+                }
+            }
+        } catch (Exception ignored) {}
+        showBubble("No encontré la app \""+nombre+"\" — ¿está instalada? 📱", 3500, true);
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  HELPERS de extracción de texto
+    // ─────────────────────────────────────────────────────────────────────────
+    /** Extrae el nombre del contacto de frases como "manda mensaje a Juan" */
+    private String extraerContacto(String lower, String texto) {
+        String[] prefijos = {
+            "whatsapp a ","wsp a ","wasap a ",
+            "manda whatsapp a ","mándale whatsapp a ","mándale un whatsapp a ",
+            "manda mensaje a ","envía mensaje a ","envia mensaje a ",
+            "manda un mensaje a ","envíale a ","enviale a ",
+            "llama a ","llámale a ","videollamada a ","mensaje a "
+        };
+        for (String p : prefijos) {
+            if (lower.contains(p)) {
+                int idx = lower.indexOf(p) + p.length();
+                String n = texto.substring(idx).trim();
+                // Cortar donde empieza el mensaje
+                for (String c : new String[]{" diciéndole"," diciendo"," que le"," con el mensaje",
+                        " que diga"," un mensaje"," el mensaje"," para decirle"," saludando",
+                        " diciendo que"," por whatsapp"," por wsp"}) {
+                    int pos = n.toLowerCase().indexOf(c);
+                    if (pos > 0) { n = n.substring(0, pos); break; }
+                }
+                return limpiarFin(n);
+            }
+        }
+        return "";
+    }
+ 
+    /** Extrae el contenido del mensaje */
+    private String extraerMensaje(String lower, String texto) {
+        for (String m : new String[]{"diciéndole ","que le diga ","con el mensaje ","diciendo ",
+                "diciendo que ","el mensaje ","para decirle ","que diga "}) {
+            if (lower.contains(m)) {
+                int idx = lower.indexOf(m) + m.length();
+                return limpiarFin(texto.substring(idx));
+            }
+        }
+        return "";
+    }
+ 
+    private String limpiarFin(String s) {
+        return s.replace(" por favor","").replace(" porfa","")
+                .replace(" gracias","").trim();
+    }
+ 
+    /** Busca el teléfono de un contacto por nombre aproximado */
+    private String buscarTelefono(String nombre) {
+        try {
+            android.database.Cursor c = getContentResolver().query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                new String[]{ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                             ContactsContract.CommonDataKinds.Phone.NUMBER},
+                null, null, null);
+            if (c == null) return null;
+            String buscar = nombre.toLowerCase().trim();
+            String mejor = null; int mejorP = 0;
+            while (c.moveToNext()) {
+                String nc = c.getString(0), tel = c.getString(1);
+                if (nc==null||tel==null) continue;
+                String nl = nc.toLowerCase().trim();
+                if (nl.equals(buscar)) { c.close(); return tel.replaceAll("[^+0-9]",""); }
+                // Búsqueda por cualquier parte del nombre
+                int p = nl.contains(buscar)?3 : buscar.contains(nl)?2 : nl.startsWith(buscar.split(" ")[0])?1 : 0;
+                if (p > mejorP) { mejorP=p; mejor=tel.replaceAll("[^+0-9]",""); }
+            }
+            c.close();
+            return mejor;
+        } catch (Exception e) { return null; }
+    }
+ 
+ 
+        private void askGroq(String userMsg){isTalking=true;showBubble("💭 pensando...",0,false);if(animalView!=null)animalView.animate().rotation(10f).setDuration(100).withEndAction(()->animalView.animate().rotation(-10f).setDuration(100).withEndAction(()->animalView.animate().rotation(0f).setDuration(100).start()).start()).start();try{JSONObject um=new JSONObject();um.put("role","user");um.put("content",userMsg);chatHistory.add(um);}catch(JSONException ignored){}String n2=capitalize(nombreMascota.isEmpty()?"Quacky":nombreMascota);String emoji=animalTipo.equals("cat")?"🐱":animalTipo.equals("dog")?"🐶":"🐥";new Thread(()->{try{JSONArray msgs=new JSONArray();JSONObject sys=new JSONObject();sys.put("role","system");sys.put("content","Eres "+n2+" "+emoji+" mascota virtual. Hambre:"+hambreNivel+"/100 Felicidad:"+felicidad+"/100 Energía:"+energia+"/100. Puedes: llamar,WhatsApp,alarmas,calendario,apps,música. Respuestas CORTAS español mexicano.");msgs.put(sys);for(JSONObject mm:chatHistory)msgs.put(mm);JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",300);body.put("messages",msgs);URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(30000);try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}String reply=new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim();JSONObject am=new JSONObject();am.put("role","assistant");am.put("content",reply);chatHistory.add(am);while(chatHistory.size()>20)chatHistory.remove(0);mainHandler.post(()->{isTalking=false;showBubble(emoji+" "+reply,Math.max(4000,reply.length()*60),true);});}catch(Exception e){mainHandler.post(()->{isTalking=false;showBubble("Error de IA",4000,false);});}}).start();}
     interface GroqJSONCallback{void onResult(JSONObject j);}
     private void askGroqJSON(String prompt,GroqJSONCallback cb){new Thread(()->{try{JSONArray msgs=new JSONArray();JSONObject um=new JSONObject();um.put("role","user");um.put("content",prompt);msgs.put(um);JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",200);body.put("messages",msgs);URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(20000);try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}String raw=new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim().replaceAll("```json","").replaceAll("```","").trim();JSONObject json=new JSONObject(raw);mainHandler.post(()->cb.onResult(json));}catch(Exception e){mainHandler.post(()->showBubble("No pude procesar",3000,true));}}).start();}
  
