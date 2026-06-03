@@ -583,13 +583,26 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private boolean handleVoiceCommand(String texto) {
         String lower = texto.toLowerCase().trim();
  
+        // ── VIDEO (va ANTES que música, "reproduce" aplica para ambos) ────
+        boolean esVideo = lower.contains("netflix") || lower.contains("prime video")
+            || lower.contains("amazon video") || lower.contains("disney")
+            || lower.contains("hbo") || lower.contains(" max ") || lower.endsWith(" max")
+            || lower.contains("vix") || lower.contains("paramount")
+            || lower.contains("apple tv") || lower.contains("claro video")
+            || lower.contains("mubi") || lower.contains("crunchyroll")
+            || (lower.contains("youtube") && !lower.contains("music") && !lower.contains("música") && !lower.contains("musica"))
+            || (lower.contains("película") || lower.contains("serie") || lower.contains("episodio")
+                || lower.contains("temporada") || lower.contains("documental") || lower.contains("anime"));
+        if (esVideo) { abrirAppVideo(texto); return true; }
+ 
         // ── MÚSICA ────────────────────────────────────────────────────────
         boolean esMusica = lower.contains("reproduce") || lower.contains("pon la canción")
             || lower.contains("quiero escuchar") || lower.contains("ponme")
             || lower.contains("pon música") || lower.contains("pon musica")
             || lower.contains("abre spotify") || lower.contains("pon spotify")
             || lower.contains("abre tidal") || lower.contains("abre youtube music")
-            || lower.contains("abre apple music");
+            || lower.contains("abre apple music") || lower.contains("pon música de")
+            || lower.contains("escucho");
         if (esMusica) { pedirYReproducirCancion(texto); return true; }
  
         // ── ALARMA ────────────────────────────────────────────────────────
@@ -704,46 +717,83 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private void abrirAppMusica(String app, String cancion) {
         String paquete, nombre;
         switch (app) {
-            case "tidal":        paquete="com.aspiro.tidal";                          nombre="Tidal";         break;
-            case "qobuz":        paquete="com.qobuz.music";                           nombre="Qobuz";         break;
-            case "youtube_music":paquete="com.google.android.apps.youtube.music";     nombre="YouTube Music"; break;
-            case "apple_music":  paquete="com.apple.android.music";                   nombre="Apple Music";   break;
-            case "deezer":       paquete="deezer.android.app";                        nombre="Deezer";        break;
-            case "amazon_music": paquete="com.amazon.mp3";                            nombre="Amazon Music";  break;
-            default:             paquete="com.spotify.music";                         nombre="Spotify";       break;
+            case "tidal":         paquete="com.aspiro.tidal";                         nombre="Tidal";         break;
+            case "qobuz":         paquete="com.qobuz.music";                          nombre="Qobuz";         break;
+            case "youtube_music": paquete="com.google.android.apps.youtube.music";    nombre="YouTube Music"; break;
+            case "apple_music":   paquete="com.apple.android.music";                  nombre="Apple Music";   break;
+            case "deezer":        paquete="deezer.android.app";                       nombre="Deezer";        break;
+            case "amazon_music":  paquete="com.amazon.mp3";                           nombre="Amazon Music";  break;
+            default:              paquete="com.spotify.music";                        nombre="Spotify";       break;
         }
  
-        String msg = cancion!=null ? "🎵 Buscando \""+cancion+"\" en "+nombre+"..." : "🎵 Abriendo "+nombre+"...";
+        String msg = (cancion!=null&&!cancion.isEmpty())
+            ? "🎵 Buscando \""+cancion+"\" en "+nombre+"..."
+            : "🎵 Abriendo "+nombre+"...";
         showBubble(msg, 4000, true);
  
+        // Paso 1: intentar abrir directamente por paquete
         try {
-            Intent i = null;
-            // Intento con canción
-            if (cancion != null && !cancion.isEmpty()) {
-                if (app.equals("spotify"))
-                    i = new Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:"+Uri.encode(cancion)));
-                else if (app.equals("youtube_music"))
-                    i = new Intent(Intent.ACTION_SEARCH);
-            }
-            // Intento de lanzar app directamente
-            if (i == null) i = getPackageManager().getLaunchIntentForPackage(paquete);
+            Intent i = getPackageManager().getLaunchIntentForPackage(paquete);
             if (i != null) {
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(i);
+                // Si hay canción, buscarla aparte con 500ms de delay (app tarda en abrir)
+                if (cancion != null && !cancion.isEmpty()) {
+                    final String buscar = cancion;
+                    final String appNom = app;
+                    mainHandler.postDelayed(() -> buscarEnApp(appNom, buscar), 1500);
+                }
                 return;
             }
         } catch (Exception ignored) {}
  
-        // Fallback: abrir en Play Store
+        // Paso 2: intentar con URI scheme del app
+        try {
+            String uri = null;
+            if (app.equals("spotify") && cancion!=null && !cancion.isEmpty())
+                uri = "spotify:search:" + Uri.encode(cancion);
+            else if (app.equals("spotify"))
+                uri = "spotify:";
+            if (uri != null) {
+                Intent i2 = new Intent(Intent.ACTION_VIEW, Uri.parse(uri));
+                i2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i2);
+                return;
+            }
+        } catch (Exception ignored) {}
+ 
+        // Paso 3: app no instalada → Play Store
+        showBubble(nombre+" no está instalado 😔\nTe abro la Play Store para instalarlo", 5000, true);
         try {
             Intent store = new Intent(Intent.ACTION_VIEW,
-                Uri.parse("market://details?id="+paquete));
+                Uri.parse("https://play.google.com/store/apps/details?id="+paquete));
             store.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(store);
-            showBubble(nombre+" no instalado — abriendo Play Store 📲", 4000, true);
-        } catch (Exception e) {
-            showBubble("No pude abrir "+nombre+" 😔", 3000, false);
-        }
+        } catch (Exception ignored) {}
+    }
+ 
+    /** Después de abrir la app, buscar la canción/artista */
+    private void buscarEnApp(String app, String cancion) {
+        try {
+            Intent search = null;
+            switch (app) {
+                case "spotify":
+                    search = new Intent(Intent.ACTION_VIEW,
+                        Uri.parse("spotify:search:" + Uri.encode(cancion)));
+                    break;
+                case "youtube_music":
+                    search = new Intent(Intent.ACTION_VIEW,
+                        Uri.parse("https://music.youtube.com/search?q=" + Uri.encode(cancion)));
+                    search.setPackage("com.google.android.apps.youtube.music");
+                    break;
+                default:
+                    return;
+            }
+            if (search != null) {
+                search.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(search);
+            }
+        } catch (Exception ignored) {}
     }
  
     // ─────────────────────────────────────────────────────────────────────────
@@ -796,7 +846,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
                     String display = mensaje.isEmpty()
                         ? "💬 Abriendo chat de "+nombre+" en WhatsApp..."
                         : "💬 Enviando a "+nombre+": \""+mensaje+"\"";
-                    showBubble(display, 4000, true);
+                    showBubble(display + (mensaje.isEmpty() ? "" : "\n(El mensaje ya está escrito, solo presiona Enviar 📨)"), 5000, true);
                     try {
                         Intent wa = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                         wa.setPackage("com.whatsapp");
@@ -940,6 +990,107 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     // ─────────────────────────────────────────────────────────────────────────
     //  ABRIR APP
     // ─────────────────────────────────────────────────────────────────────────
+ 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  VIDEO STREAMING — Netflix, YouTube, Prime Video, Disney+, Vix, etc.
+    // ─────────────────────────────────────────────────────────────────────────
+    private void abrirAppVideo(String texto) {
+        String lower = texto.toLowerCase();
+        // Detectar qué app de video quiere el usuario
+        String app = "youtube"; // default
+        if (lower.contains("netflix"))                       app = "netflix";
+        else if (lower.contains("prime video") || lower.contains("amazon video") || lower.contains("amazon prime")) app = "prime";
+        else if (lower.contains("disney"))                   app = "disney";
+        else if (lower.contains("hbo") || (lower.contains("max") && !lower.contains("amazon"))) app = "max";
+        else if (lower.contains("vix"))                      app = "vix";
+        else if (lower.contains("paramount"))                app = "paramount";
+        else if (lower.contains("apple tv"))                 app = "appletv";
+        else if (lower.contains("crunchyroll"))              app = "crunchyroll";
+        else if (lower.contains("mubi"))                     app = "mubi";
+        else if (lower.contains("claro video"))              app = "clarovideo";
+ 
+        // Extraer título (quitando keywords)
+        String titulo = lower
+            .replace("reproduce","").replace("pon","").replace("ponme","")
+            .replace("quiero ver","").replace("pon la película","").replace("pon la serie","")
+            .replace("en netflix","").replace("netflix","")
+            .replace("en prime video","").replace("prime video","").replace("amazon prime","")
+            .replace("en disney","").replace("disney plus","").replace("disney+","").replace("disney","")
+            .replace("en hbo","").replace("hbo max","").replace("en max","").replace("max","")
+            .replace("en vix","").replace("vix","")
+            .replace("en youtube","").replace("youtube","")
+            .replace("en paramount","").replace("paramount","")
+            .replace("la película","").replace("la serie","").replace("el episodio","")
+            .replace("la temporada","").replace("por favor","")
+            .replaceAll("\\s+"," ").trim();
+ 
+        if (titulo.length() < 2) titulo = null;
+ 
+        // Nombres de apps y paquetes
+        String paquete, nombreApp;
+        switch (app) {
+            case "netflix":    paquete="com.netflix.mediaclient";                  nombreApp="Netflix";       break;
+            case "prime":      paquete="com.amazon.avod.thirdpartyclient";         nombreApp="Prime Video";   break;
+            case "disney":     paquete="com.disney.disneyplus";                    nombreApp="Disney+";       break;
+            case "max":        paquete="com.hbo.hbonow";                           nombreApp="Max/HBO";       break;
+            case "vix":        paquete="tv.vixx.android";                          nombreApp="Vix";           break;
+            case "paramount":  paquete="com.cbs.app";                              nombreApp="Paramount+";    break;
+            case "appletv":    paquete="com.apple.atve.androidtv.appletv";         nombreApp="Apple TV+";     break;
+            case "crunchyroll":paquete="com.crunchyroll.crunchyroid";              nombreApp="Crunchyroll";   break;
+            case "mubi":       paquete="com.mubi";                                 nombreApp="MUBI";          break;
+            case "clarovideo": paquete="com.clarovideo.clarovideo";               nombreApp="Claro Video";   break;
+            default:           paquete="com.google.android.youtube";              nombreApp="YouTube";       break;
+        }
+ 
+        String msg = (titulo!=null)
+            ? "🎬 Buscando \""+titulo+"\" en "+nombreApp+"..."
+            : "📺 Abriendo "+nombreApp+"...";
+        showBubble(msg, 4000, true);
+ 
+        // Paso 1: abrir por paquete
+        try {
+            Intent i = getPackageManager().getLaunchIntentForPackage(paquete);
+            if (i != null) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+                // Si hay título, buscar en YouTube (el único que soporta búsqueda fácil)
+                if (titulo != null && app.equals("youtube")) {
+                    final String q = titulo;
+                    mainHandler.postDelayed(() -> {
+                        try {
+                            Intent yt = new Intent(Intent.ACTION_SEARCH);
+                            yt.setPackage("com.google.android.youtube");
+                            yt.putExtra("query", q);
+                            yt.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(yt);
+                        } catch (Exception ignored) {}
+                    }, 1500);
+                }
+                return;
+            }
+        } catch (Exception ignored) {}
+ 
+        // Paso 2: URI scheme para YouTube
+        if (app.equals("youtube") && titulo != null) {
+            try {
+                Intent yt = new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://www.youtube.com/results?search_query="+Uri.encode(titulo)));
+                yt.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(yt);
+                return;
+            } catch (Exception ignored) {}
+        }
+ 
+        // Paso 3: no instalada → Play Store
+        showBubble(nombreApp+" no está instalado 😔\nTe abro Play Store para instalarlo", 5000, true);
+        try {
+            Intent store = new Intent(Intent.ACTION_VIEW,
+                Uri.parse("https://play.google.com/store/apps/details?id="+paquete));
+            store.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(store);
+        } catch (Exception ignored) {}
+    }
+ 
     private void abrirAppDinamica(String nombre) {
         if (nombre.isEmpty()) return;
         // Mapa de apps conocidas
