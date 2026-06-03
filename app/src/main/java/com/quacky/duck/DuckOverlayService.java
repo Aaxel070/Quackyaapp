@@ -51,8 +51,6 @@ public class DuckOverlayService extends Service implements SensorEventListener {
  
     // ── Muerte ────────────────────────────────────────────────────────────────────
     private boolean animalMuerto = false;
-    private View    moscasView   = null;
-    private WindowManager.LayoutParams moscasParams = null;
  
     // ── Hambre (Tamagotchi) ───────────────────────────────────────────────────
     private int      hambreNivel   = 0;
@@ -381,8 +379,13 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         if (quejaRunnable != null) { quejaHandler.removeCallbacks(quejaRunnable); quejaRunnable = null; }
         // Iniciar animación de muerte en el DuckView
         if (animalView instanceof DuckView) ((DuckView) animalView).iniciarMuerte();
-        // Mostrar moscas volando sobre el cadáver (después de la animación de muerte)
-        mainHandler.postDelayed(this::mostrarMoscas, 3200);
+        // Registrar callback para expandir la vista cuando termine la fase 1
+        if (animalView instanceof DuckView) {
+            ((DuckView) animalView).setOnDeathCompleteListener(() -> {
+                // Fase 1 terminó → expandir vista para mostrar escena completa
+                mainHandler.post(() -> expandirVistaParaMuerte());
+            });
+        }
         // Mensaje dramático
         mainHandler.postDelayed(() -> showBubble("💀 Me morí de hambre... ¡Aliméntame en la app!", 0, true), 3000);
         // Resucitar si le dan de comer (se procesa en procesarAlimentacion)
@@ -391,7 +394,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private void resucitar() {
         if (!animalMuerto) return;
         animalMuerto = false;
-        quitarMoscas();
+        resetearTamanioVista();
         // El DuckView no tiene reset de muerte en tiempo de ejecución,
         // así que reiniciamos la vista recreándola
         mainHandler.post(() -> {
@@ -409,61 +412,34 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     }
  
     // ─────────────────────────────────────────────────────────────────────────
-    //  MOSCAS — aparecen sobre el cadáver al morir
+    //  Vista de muerte — expandir para mostrar la escena completa (calavera+moscas)
     // ─────────────────────────────────────────────────────────────────────────
-    private void mostrarMoscas() {
-        if (moscasView != null || !animalMuerto) return;
-        try {
-            // Cargar el bitmap del sprite de moscas
-            int resId = getResources().getIdentifier("moscas","drawable",getPackageName());
-            final android.graphics.Bitmap moscasBmp = resId != 0
-                ? android.graphics.BitmapFactory.decodeResource(getResources(), resId) : null;
-            if (moscasBmp == null) return;
- 
-            final int FRAMES = 16;
-            final int FW = moscasBmp.getWidth() / FRAMES;
- 
-            moscasView = new android.view.View(this) {
-                private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG | android.graphics.Paint.FILTER_BITMAP_FLAG);
-                private final android.graphics.Rect src = new android.graphics.Rect();
-                private final android.graphics.RectF dst = new android.graphics.RectF();
- 
-                @Override protected void onDraw(android.graphics.Canvas c) {
-                    if (moscasBmp.isRecycled()) return;
-                    int frame = (int)((System.currentTimeMillis() / 80) % FRAMES);
-                    src.set(frame * FW, 0, (frame+1)*FW, moscasBmp.getHeight());
-                    dst.set(0, 0, getWidth(), getHeight());
-                    c.drawBitmap(moscasBmp, src, dst, p);
-                    postInvalidateDelayed(80);
-                }
-            };
-            moscasView.setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null);
- 
-            int tamanio = dp(140);
-            moscasParams = new WindowManager.LayoutParams(
-                tamanio, tamanio, overlayType,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                android.graphics.PixelFormat.TRANSLUCENT);
-            moscasParams.gravity = android.view.Gravity.TOP | android.view.Gravity.START;
-            // Posicionar centradas sobre el cadáver
-            moscasParams.x = (int)(currentX - dp(40));
-            moscasParams.y = (int)(currentY - dp(130));
-            wm.addView(moscasView, moscasParams);
-        } catch (Exception e) {
-            moscasView = null;
-        }
+    private void expandirVistaParaMuerte() {
+        if (!animalMuerto || animalView == null) return;
+        // La escena completa es más alta que el pato normal:
+        // incluye calavera arriba + pato + moscas orbitando
+        int nuevoAncho = dp(135);
+        int nuevoAlto  = dp(160);
+        // Centrar horizontalmente y mover arriba para que el pato quede en su sitio
+        int nuevoX = (int)(currentX - (nuevoAncho - dp(DUCK_SIZE_DP)) / 2f);
+        int nuevoY = (int)(currentY - dp(100));
+        animalParams.width  = nuevoAncho;
+        animalParams.height = nuevoAlto;
+        animalParams.x = nuevoX;
+        animalParams.y = Math.max(0, nuevoY);
+        try { wm.updateViewLayout(animalView, animalParams); } catch (Exception ignored) {}
     }
  
-    private void quitarMoscas() {
-        if (moscasView != null) {
-            try { wm.removeView(moscasView); } catch (Exception ignored) {}
-            moscasView = null;
-        }
+    private void resetearTamanioVista() {
+        if (animalView == null) return;
+        animalParams.width  = dp(DUCK_SIZE_DP);
+        animalParams.height = dp(DUCK_SIZE_DP);
+        animalParams.x = (int) currentX;
+        animalParams.y = (int) currentY;
+        try { wm.updateViewLayout(animalView, animalParams); } catch (Exception ignored) {}
     }
  
-    private void guardarStats(){
+        private void guardarStats(){
         getSharedPreferences("quacky_prefs",MODE_PRIVATE).edit()
             .putInt("hambre_nivel",hambreNivel).putInt("felicidad",felicidad).putInt("energia",energia).apply();
     }
@@ -634,7 +610,6 @@ public class DuckOverlayService extends Service implements SensorEventListener {
         if(animalView!=null)try{wm.removeView(animalView);}catch(Exception ignored){}
         if(bubbleCard!=null)try{wm.removeView(bubbleCard);}catch(Exception ignored){}
         if(footprintOverlay!=null)try{wm.removeView(footprintOverlay);}catch(Exception ignored){}
-        quitarMoscas();
         if(voiceResultReceiver!=null)try{unregisterReceiver(voiceResultReceiver);}catch(Exception ignored){}
         if(escucharReceiver!=null)try{unregisterReceiver(escucharReceiver);}catch(Exception ignored){}
         if(alimentarReceiver!=null)try{unregisterReceiver(alimentarReceiver);}catch(Exception ignored){}
