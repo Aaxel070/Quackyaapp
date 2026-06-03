@@ -51,6 +51,8 @@ public class DuckOverlayService extends Service implements SensorEventListener {
  
     // ── Muerte ────────────────────────────────────────────────────────────────────
     private boolean animalMuerto = false;
+    private View    moscasView   = null;
+    private WindowManager.LayoutParams moscasParams = null;
  
     // ── Hambre (Tamagotchi) ───────────────────────────────────────────────────
     private int      hambreNivel   = 0;
