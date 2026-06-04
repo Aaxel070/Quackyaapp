@@ -974,65 +974,62 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     //  ALARMA
     // ─────────────────────────────────────────────────────────────────────────
     private void parsearYPonerAlarma(String texto) {
-        showBubble("⏰ Configurando alarma...", 0, true);
-        askGroqJSON(
-            "Extrae la hora del texto: \"" + texto + "\"
-Responde SOLO con JSON: {\"hora\":NÚMERO,\"minutos\":NÚMERO,\"etiqueta\":\"TEXTO\"}
-Si dice 'de la tarde/noche' y hora<12, suma 12. 'y media'=30min. 'al cuarto'=15min.",
-            json -> {
-                try {
-                    int hora = json.getInt("hora");
-                    int min  = json.optInt("minutos", 0);
-                    String et = json.optString("etiqueta", "Quacky IA");
-                    Intent a = new Intent(AlarmClock.ACTION_SET_ALARM);
-                    a.putExtra(AlarmClock.EXTRA_HOUR,    hora);
-                    a.putExtra(AlarmClock.EXTRA_MINUTES, min);
-                    a.putExtra(AlarmClock.EXTRA_MESSAGE, et);
-                    a.putExtra(AlarmClock.EXTRA_SKIP_UI, false);
-                    a.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(a);
-                    showBubble("⏰ Alarma puesta a las " + hora + ":" + String.format("%02d", min), 5000, true);
-                } catch (Exception e) {
-                    showBubble("No entendí la hora — di algo como 'a las 7 de la mañana' ⏰", 4000, true);
-                }
-            });
+        showBubble("Configurando alarma... ⏰", 0, true);
+        String p = "Del texto extrae hora y minutos para alarma. Texto: " + texto
+            + " Responde SOLO con JSON: {hora:NUMERO,minutos:NUMERO,etiqueta:TEXTO}"
+            + " Reglas: tarde o noche suma 12 si hora menor de 12."
+            + " y media = 30 minutos. al cuarto = 15 minutos.";
+        askGroqJSON(p, json -> {
+            try {
+                int hora = json.getInt("hora");
+                int min  = json.optInt("minutos", 0);
+                String et = json.optString("etiqueta", "Quacky IA");
+                Intent a = new Intent(AlarmClock.ACTION_SET_ALARM);
+                a.putExtra(AlarmClock.EXTRA_HOUR,    hora);
+                a.putExtra(AlarmClock.EXTRA_MINUTES, min);
+                a.putExtra(AlarmClock.EXTRA_MESSAGE, et);
+                a.putExtra(AlarmClock.EXTRA_SKIP_UI, false);
+                a.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(a);
+                showBubble("Alarma puesta a las " + hora + ":" + String.format("%02d", min) + " ⏰", 5000, true);
+            } catch (Exception e) {
+                showBubble("No entendi la hora, di: a las 7 de la manana ⏰", 4000, true);
+            }
+        });
     }
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  CALENDARIO
-    // ─────────────────────────────────────────────────────────────────────────
     private void parsearYAgregarCalendario(String texto) {
-        showBubble("📅 Agregando al calendario...", 0, true);
-        askGroqJSON(
-            "Extrae el evento del texto: \"" + texto + "\"
-Responde SOLO con JSON: {\"titulo\":\"TEXTO\",\"dia\":NÚMERO,\"mes\":NÚMERO,\"año\":NÚMERO,\"hora\":NÚMERO,\"minutos\":NÚMERO}
-Si no hay hora usa 9. Si no hay año usa el actual. Mes en número (enero=1).",
-            json -> {
-                try {
-                    String tit = json.optString("titulo", "Evento");
-                    int d   = json.optInt("dia",  1);
-                    int mes = json.optInt("mes",  1);
-                    int año = json.optInt("año",  java.util.Calendar.getInstance().get(java.util.Calendar.YEAR));
-                    int h   = json.optInt("hora", 9);
-                    int min = json.optInt("minutos", 0);
-                    java.util.Calendar c = java.util.Calendar.getInstance();
-                    c.set(año, mes - 1, d, h, min, 0);
-                    Intent ci = new Intent(Intent.ACTION_INSERT);
-                    ci.setData(CalendarContract.Events.CONTENT_URI);
-                    ci.putExtra(CalendarContract.Events.TITLE, tit);
-                    ci.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, c.getTimeInMillis());
-                    ci.putExtra(CalendarContract.EXTRA_EVENT_END_TIME,   c.getTimeInMillis() + 3600000);
-                    ci.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(ci);
-                    showBubble("📅 Guardé: \"" + tit + "\" el " + d + "/" + mes + "/" + año, 5000, true);
-                } catch (Exception e) {
-                    showBubble("No pude agregar — intenta con más detalle 📅", 4000, true);
-                }
-            });
+        showBubble("Agregando al calendario... 📅", 0, true);
+        int anioActual = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR);
+        String p = "Del texto extrae datos para evento de calendario. Texto: " + texto
+            + " Responde SOLO con JSON: {titulo:TEXTO,dia:NUMERO,mes:NUMERO,anio:NUMERO,hora:NUMERO,minutos:NUMERO}"
+            + " Si no hay hora usa 9. Si no hay anio usa " + anioActual + "."
+            + " Mes en numero (enero=1).";
+        askGroqJSON(p, json -> {
+            try {
+                String tit = json.optString("titulo", "Evento");
+                int d   = json.optInt("dia",    1);
+                int mes = json.optInt("mes",     1);
+                int ani = json.optInt("anio",    anioActual);
+                int h   = json.optInt("hora",    9);
+                int min = json.optInt("minutos", 0);
+                java.util.Calendar c = java.util.Calendar.getInstance();
+                c.set(ani, mes - 1, d, h, min, 0);
+                Intent ci = new Intent(Intent.ACTION_INSERT);
+                ci.setData(CalendarContract.Events.CONTENT_URI);
+                ci.putExtra(CalendarContract.Events.TITLE, tit);
+                ci.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, c.getTimeInMillis());
+                ci.putExtra(CalendarContract.EXTRA_EVENT_END_TIME,   c.getTimeInMillis() + 3600000);
+                ci.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(ci);
+                showBubble("Guarde: " + tit + " el " + d + "/" + mes + " 📅", 5000, true);
+            } catch (Exception e) {
+                showBubble("No pude agregar, intenta con mas detalle 📅", 4000, true);
+            }
+        });
     }
  
- 
-        private void askGroq(String userMsg){isTalking=true;showBubble("💭 pensando...",0,false);if(animalView!=null)animalView.animate().rotation(10f).setDuration(100).withEndAction(()->animalView.animate().rotation(-10f).setDuration(100).withEndAction(()->animalView.animate().rotation(0f).setDuration(100).start()).start()).start();try{JSONObject um=new JSONObject();um.put("role","user");um.put("content",userMsg);chatHistory.add(um);}catch(JSONException ignored){}String n2=capitalize(nombreMascota.isEmpty()?"Quacky":nombreMascota);String emoji=animalTipo.equals("cat")?"🐱":animalTipo.equals("dog")?"🐶":"🐥";new Thread(()->{try{JSONArray msgs=new JSONArray();JSONObject sys=new JSONObject();sys.put("role","system");sys.put("content","Eres "+n2+" "+emoji+" mascota virtual. Hambre:"+hambreNivel+"/100 Felicidad:"+felicidad+"/100 Energía:"+energia+"/100. Puedes: llamar,WhatsApp,alarmas,calendario,apps,música. Respuestas CORTAS español mexicano.");msgs.put(sys);for(JSONObject mm:chatHistory)msgs.put(mm);JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",300);body.put("messages",msgs);URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(30000);try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}String reply=new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim();JSONObject am=new JSONObject();am.put("role","assistant");am.put("content",reply);chatHistory.add(am);while(chatHistory.size()>20)chatHistory.remove(0);mainHandler.post(()->{isTalking=false;showBubble(emoji+" "+reply,Math.max(4000,reply.length()*60),true);});}catch(Exception e){mainHandler.post(()->{isTalking=false;showBubble("Error de IA",4000,false);});}}).start();}
+    private void askGroq(String userMsg){isTalking=true;showBubble("💭 pensando...",0,false);if(animalView!=null)animalView.animate().rotation(10f).setDuration(100).withEndAction(()->animalView.animate().rotation(-10f).setDuration(100).withEndAction(()->animalView.animate().rotation(0f).setDuration(100).start()).start()).start();try{JSONObject um=new JSONObject();um.put("role","user");um.put("content",userMsg);chatHistory.add(um);}catch(JSONException ignored){}String n2=capitalize(nombreMascota.isEmpty()?"Quacky":nombreMascota);String emoji=animalTipo.equals("cat")?"🐱":animalTipo.equals("dog")?"🐶":"🐥";new Thread(()->{try{JSONArray msgs=new JSONArray();JSONObject sys=new JSONObject();sys.put("role","system");sys.put("content","Eres "+n2+" "+emoji+" mascota virtual. Hambre:"+hambreNivel+"/100 Felicidad:"+felicidad+"/100 Energía:"+energia+"/100. Puedes: llamar,WhatsApp,alarmas,calendario,apps,música. Respuestas CORTAS español mexicano.");msgs.put(sys);for(JSONObject mm:chatHistory)msgs.put(mm);JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",300);body.put("messages",msgs);URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(30000);try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}String reply=new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim();JSONObject am=new JSONObject();am.put("role","assistant");am.put("content",reply);chatHistory.add(am);while(chatHistory.size()>20)chatHistory.remove(0);mainHandler.post(()->{isTalking=false;showBubble(emoji+" "+reply,Math.max(4000,reply.length()*60),true);});}catch(Exception e){mainHandler.post(()->{isTalking=false;showBubble("Error de IA",4000,false);});}}).start();}
     interface GroqJSONCallback{void onResult(JSONObject j);}
     private void askGroqJSON(String prompt,GroqJSONCallback cb){new Thread(()->{try{JSONArray msgs=new JSONArray();JSONObject um=new JSONObject();um.put("role","user");um.put("content",prompt);msgs.put(um);JSONObject body=new JSONObject();body.put("model",GROQ_MODEL);body.put("max_tokens",200);body.put("messages",msgs);URL url=new URL(GROQ_URL);HttpURLConnection conn=(HttpURLConnection)url.openConnection();conn.setRequestMethod("POST");conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("Authorization","Bearer "+GROQ_API_KEY);conn.setDoOutput(true);conn.setConnectTimeout(15000);conn.setReadTimeout(20000);try(OutputStream os=conn.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();try(BufferedReader br=new BufferedReader(new InputStreamReader(conn.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=br.readLine())!=null)sb.append(line);}String raw=new JSONObject(sb.toString()).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim().replaceAll("```json","").replaceAll("```","").trim();JSONObject json=new JSONObject(raw);mainHandler.post(()->cb.onResult(json));}catch(Exception e){mainHandler.post(()->showBubble("No pude procesar",3000,true));}}).start();}
  
