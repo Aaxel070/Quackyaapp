@@ -173,9 +173,9 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     //  WAKE WORD — SpeechRecognizer corriendo en el main thread del Service
     //
     //  Flujo:
-    //  iniciarWakeWord() → iniciarCicloWake() → startListening()
-    //  Si oye el nombre → reaccionarAlNombre() → (espera 8s) → iniciarCicloWake()
-    //  Si timeout/error → (espera 500ms) → iniciarCicloWake()
+    //  iniciarWakeWord() → cicloEscucha() → startListening()
+    //  Si oye el nombre → reaccionarAlNombre() → (espera 8s) → cicloEscucha()
+    //  Si timeout/error → (espera 500ms) → cicloEscucha()
     // ─────────────────────────────────────────────────────────────────────────
     // ─────────────────────────────────────────────────────────────────────────
     //  VISTA INVISIBLE 1×1 px — maneja SpeechRecognizer en su propio ciclo
@@ -370,7 +370,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
  
     private void reanudarWake(){
         enComando=false;
-        mainHandler.postDelayed(()->iniciarCicloWake(),2500);
+        mainHandler.postDelayed(()->cicloEscucha(),2500);
     }
  
     // ─────────────────────────────────────────────────────────────────────────
@@ -434,7 +434,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
             }
         });
         // Reanudar wake word
-        mainHandler.postDelayed(this::iniciarCicloWake, 3000);
+        mainHandler.postDelayed(this::cicloEscucha, 3000);
     }
  
     // ─────────────────────────────────────────────────────────────────────────
