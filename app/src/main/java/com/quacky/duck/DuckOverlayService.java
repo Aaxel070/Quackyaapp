@@ -38,8 +38,8 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     private static final float SPEED_BASE   = 0.011f;
     private static final float GYRO_FORCE   = 18f;
  
-    // ── Wake word — SpeechRecognizer en el main thread ───────────────────────
-    // ¿Por qué SpeechRecognizer en lugar de MediaRecorder+Whisper?
+    // ── Wake word — vista invisible 1×1 px con SpeechRecognizer propio ────────
+    // La vista tiene su propio lifecycle, más estable que service directo
     // - SpeechRecognizer sabemos que funciona (el toque ya lo usa)
     // - No necesita internet propio (usa el reconocedor del sistema)
     // - No tiene problemas de archivo/permisos de grabación
@@ -177,109 +177,135 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     //  Si oye el nombre → reaccionarAlNombre() → (espera 8s) → iniciarCicloWake()
     //  Si timeout/error → (espera 500ms) → iniciarCicloWake()
     // ─────────────────────────────────────────────────────────────────────────
-    private void iniciarWakeWord(){
-        if(nombreMascota.isEmpty()){
-            // Sin nombre configurado → el botón de notificación y el toque siguen funcionando
-            showBubble("⚠️ Configura un nombre en la app para activación por voz",5000,false);
+    // ─────────────────────────────────────────────────────────────────────────
+    //  VISTA INVISIBLE 1×1 px — maneja SpeechRecognizer en su propio ciclo
+    //  Se posiciona sobre el pato y "escucha" continuamente.
+    //  Cuando detecta el nombre llama a reaccionarAlNombre() —
+    //  exactamente como cuando el usuario toca el pato con el dedo.
+    // ─────────────────────────────────────────────────────────────────────────
+    private View              wakeView;
+    private WindowManager.LayoutParams wakeViewParams;
+    private SpeechRecognizer  wakeSR;          // recognizer propio de la vista
+    private int               wakeErrCount = 0;// errores consecutivos
+    private final Handler     wakeRetryH   = new Handler(Looper.getMainLooper());
+ 
+    private void iniciarWakeWord() {
+        if (nombreMascota.isEmpty()) {
+            showBubble("Configura un nombre en la app para activacion por voz", 5000, false);
             return;
         }
-        wakeActivo=true;
-        iniciarCicloWake();
+        wakeActivo = true;
+ 
+        // Crear vista 1×1 completamente transparente
+        wakeView = new View(DuckOverlayService.this);
+        wakeViewParams = new WindowManager.LayoutParams(
+            1, 1, overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            android.graphics.PixelFormat.TRANSLUCENT);
+        wakeViewParams.gravity = android.view.Gravity.TOP | android.view.Gravity.START;
+        wakeViewParams.x = (int) currentX;
+        wakeViewParams.y = (int) currentY;
+        wm.addView(wakeView, wakeViewParams);
+ 
+        // Iniciar ciclo de escucha con delay inicial
+        wakeRetryH.postDelayed(this::cicloEscucha, 2000);
     }
  
-    private void iniciarCicloWake(){
-        // No iniciar si estamos en otra cosa
-        if(!wakeActivo||enComando||isTalking||estaComiendo) return;
- 
-        // Destruir recognizer anterior
-        destruirWakeRecognizer();
- 
-        // Crear nuevo SpeechRecognizer en el main thread
-        // (el Service corre en el main thread, así que esto es seguro)
-        try {
-            wakeRecognizer = SpeechRecognizer.createSpeechRecognizer(DuckOverlayService.this);
-        } catch (Exception e) {
-            // Dispositivo sin reconocimiento de voz
+    /** Un ciclo de escucha: destruir anterior → crear nuevo → startListening */
+    private void cicloEscucha() {
+        if (!wakeActivo || enComando || isTalking || estaComiendo || animalMuerto) {
+            wakeRetryH.postDelayed(this::cicloEscucha, 1500);
             return;
         }
  
-        wakeRecognizer.setRecognitionListener(new RecognitionListener(){
+        // Si hubo demasiados errores seguidos → pausa larga y reset
+        if (wakeErrCount >= 6) {
+            wakeErrCount = 0;
+            wakeRetryH.postDelayed(this::cicloEscucha, 8000);
+            return;
+        }
+ 
+        destruirWakeSR();
+ 
+        if (!SpeechRecognizer.isRecognitionAvailable(DuckOverlayService.this)) {
+            wakeRetryH.postDelayed(this::cicloEscucha, 10000);
+            return;
+        }
+ 
+        wakeSR = SpeechRecognizer.createSpeechRecognizer(DuckOverlayService.this);
+        wakeSR.setRecognitionListener(new android.speech.RecognitionListener() {
             @Override
-            public void onResults(Bundle results){
-                if(!wakeActivo||enComando) return;
-                List<String> matches=results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                if(matches!=null && detectarNombre(matches)){
-                    // ✅ NOMBRE DETECTADO
+            public void onResults(android.os.Bundle results) {
+                if (!wakeActivo || enComando) { wakeRetryH.post(()->cicloEscucha()); return; }
+                wakeErrCount = 0;
+                java.util.List<String> matches =
+                    results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (matches != null && detectarNombre(matches)) {
                     reaccionarAlNombre();
-                    // Reanudar después de que termine el comando
-                    mainHandler.postDelayed(()->iniciarCicloWake(),8000);
-                }else{
-                    // No fue el nombre → reiniciar después de pausa breve
-                    mainHandler.postDelayed(()->iniciarCicloWake(),600);
+                    // Pausar 8s tras detección (el pato está atendiendo el comando)
+                    wakeRetryH.postDelayed(()->cicloEscucha(), 8000);
+                } else {
+                    wakeRetryH.postDelayed(()->cicloEscucha(), 300);
                 }
             }
- 
             @Override
-            public void onPartialResults(Bundle partial){
-                // Resultados parciales = más rápido
-                if(!wakeActivo||enComando) return;
-                List<String> p=partial.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                if(p!=null && detectarNombre(p)){
-                    destruirWakeRecognizer();
+            public void onPartialResults(android.os.Bundle partial) {
+                if (!wakeActivo || enComando) return;
+                java.util.List<String> p =
+                    partial.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (p != null && detectarNombre(p)) {
+                    destruirWakeSR();
                     reaccionarAlNombre();
-                    mainHandler.postDelayed(()->iniciarCicloWake(),8000);
+                    wakeRetryH.postDelayed(()->cicloEscucha(), 8000);
                 }
             }
- 
             @Override
-            public void onError(int error){
-                if(!wakeActivo||enComando) return;
-                // ERROR_NO_MATCH / SPEECH_TIMEOUT → reinicio rápido
-                // Otros errores → reinicio más lento
-                int delay=(error==SpeechRecognizer.ERROR_NO_MATCH
-                        ||error==SpeechRecognizer.ERROR_SPEECH_TIMEOUT)?600:2000;
-                mainHandler.postDelayed(()->iniciarCicloWake(),delay);
+            public void onError(int error) {
+                if (!wakeActivo) return;
+                // NO_MATCH / SPEECH_TIMEOUT = normal, reinicio rápido
+                boolean normal = (error == SpeechRecognizer.ERROR_NO_MATCH
+                               || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT);
+                if (!normal) wakeErrCount++;
+                int delay = normal ? 300 : (wakeErrCount < 3 ? 1500 : 4000);
+                wakeRetryH.postDelayed(()->cicloEscucha(), delay);
             }
- 
-            // Métodos vacíos requeridos por la interfaz
-            @Override public void onReadyForSpeech(Bundle p)    {}
-            @Override public void onBeginningOfSpeech()         {}
-            @Override public void onRmsChanged(float v)         {}
-            @Override public void onBufferReceived(byte[] b)    {}
-            @Override public void onEndOfSpeech()               {}
-            @Override public void onEvent(int t,Bundle b)       {}
+            @Override public void onReadyForSpeech(android.os.Bundle p) { wakeErrCount = 0; }
+            @Override public void onBeginningOfSpeech() {}
+            @Override public void onRmsChanged(float v) {}
+            @Override public void onBufferReceived(byte[] b) {}
+            @Override public void onEndOfSpeech() {}
+            @Override public void onEvent(int t, android.os.Bundle b) {}
         });
  
-        // Configurar la escucha
-        Intent intent=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
             RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE,"es-MX");
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS,5);
-        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS,true);
-        // Ventana larga de silencio → menos reinicios → menos parpadeo del mic
-        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,4000L);
-        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,3000L);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX");
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3500L);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L);
  
-        try{
-            wakeRecognizer.startListening(intent);
-        }catch(Exception e){
-            // Fallo al iniciar → reintentar
-            mainHandler.postDelayed(()->iniciarCicloWake(),3000);
+        try {
+            wakeSR.startListening(intent);
+        } catch (Exception e) {
+            wakeErrCount++;
+            wakeRetryH.postDelayed(()->cicloEscucha(), 3000);
         }
     }
  
-    private void destruirWakeRecognizer(){
-        if(wakeRecognizer!=null){
-            try{wakeRecognizer.cancel();}catch(Exception ignored){}
-            try{wakeRecognizer.destroy();}catch(Exception ignored){}
-            wakeRecognizer=null;
+    private void destruirWakeSR() {
+        if (wakeSR != null) {
+            try { wakeSR.cancel();  } catch (Exception ignored) {}
+            try { wakeSR.destroy(); } catch (Exception ignored) {}
+            wakeSR = null;
         }
     }
  
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Detección del nombre con coincidencia aproximada (Levenshtein)
-    // ─────────────────────────────────────────────────────────────────────────
+    private void destruirWakeRecognizer() { destruirWakeSR(); }
+ 
     private boolean detectarNombre(List<String> candidatos){
         if(nombreMascota.isEmpty()||candidatos==null) return false;
         String n=nombreMascota.toLowerCase().trim();
@@ -565,7 +591,7 @@ public class DuckOverlayService extends Service implements SensorEventListener {
  
     private void setupWalkAnimation(){walkAnim=new Runnable(){@Override public void run(){boolean m=isMoving()&&!estaComiendo;if(m){walkPhase+=0.05f;if(walkPhase>1f)walkPhase=0f;}setWalkState(m,walkPhase,facingRight?1f:-1f);walkHandler.postDelayed(this,25);}};walkHandler.post(walkAnim);}
     private boolean isMoving(){return Math.abs(targetX-currentX)>2||Math.abs(targetY-currentY)>2;}
-    private void startMoveLoop(){moveRunnable=new Runnable(){@Override public void run(){if(!estaComiendo&&!animalMuerto){float dx=targetX-currentX,dy=targetY-currentY,dist=(float)Math.sqrt(dx*dx+dy*dy);if(dist>1.5f){float speed=Math.min(SPEED_BASE,Math.max(0.006f,dist/2000f));currentX+=dx*speed;currentY+=dy*speed;if(dx>0!=facingRight)facingRight=dx>0;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);animalParams.x=(int)currentX;animalParams.y=(int)currentY;try{wm.updateViewLayout(animalView,animalParams);}catch(Exception ignored){}actualizarPosBurbuja();float mx=currentX-lastFootX,my=currentY-lastFootY,moved=(float)Math.sqrt(mx*mx+my*my);long now=System.currentTimeMillis();if(moved>dp(20)&&(now-lastFootprintTime)>400){lastFootprintTime=now;lastFootX=currentX;lastFootY=currentY;float ox=nextFootLeft?-dp(4):dp(4);synchronized(footprints){footprints.add(new Footprint(currentX+dp(DUCK_SIZE_DP)/2f+ox,currentY+dp(DUCK_SIZE_DP)-dp(4),now,nextFootLeft));}nextFootLeft=!nextFootLeft;}}}mainHandler.postDelayed(this,16);}};mainHandler.post(moveRunnable);}
+    private void startMoveLoop(){moveRunnable=new Runnable(){@Override public void run(){if(!estaComiendo&&!animalMuerto){float dx=targetX-currentX,dy=targetY-currentY,dist=(float)Math.sqrt(dx*dx+dy*dy);if(dist>1.5f){float speed=Math.min(SPEED_BASE,Math.max(0.006f,dist/2000f));currentX+=dx*speed;currentY+=dy*speed;if(dx>0!=facingRight)facingRight=dx>0;if(animalView instanceof DuckView)((DuckView)animalView).setMovementDirection(dx,dy);animalParams.x=(int)currentX;animalParams.y=(int)currentY;try{wm.updateViewLayout(animalView,animalParams);}catch(Exception ignored){}if(wakeView!=null&&wakeViewParams!=null){wakeViewParams.x=(int)currentX;wakeViewParams.y=(int)currentY;try{wm.updateViewLayout(wakeView,wakeViewParams);}catch(Exception ignored){}}actualizarPosBurbuja();float mx=currentX-lastFootX,my=currentY-lastFootY,moved=(float)Math.sqrt(mx*mx+my*my);long now=System.currentTimeMillis();if(moved>dp(20)&&(now-lastFootprintTime)>400){lastFootprintTime=now;lastFootX=currentX;lastFootY=currentY;float ox=nextFootLeft?-dp(4):dp(4);synchronized(footprints){footprints.add(new Footprint(currentX+dp(DUCK_SIZE_DP)/2f+ox,currentY+dp(DUCK_SIZE_DP)-dp(4),now,nextFootLeft));}nextFootLeft=!nextFootLeft;}}}mainHandler.postDelayed(this,16);}};mainHandler.post(moveRunnable);}
  
     private void startRandomSounds(){quackRunnable=new Runnable(){@Override public void run(){if(!isListening&&!isTalking&&!estaComiendo)playAnimalSound();quackHandler.postDelayed(this,15000+rng.nextInt(30000));}};quackHandler.postDelayed(quackRunnable,8000+rng.nextInt(10000));}
     private void playAnimalSound(){switch(animalTipo){case"cat":playSoundCat();break;case"dog":playSoundDog();break;default:playSoundDuck();}}
@@ -676,9 +702,15 @@ public class DuckOverlayService extends Service implements SensorEventListener {
  
         showBubble(cancion!=null ? "🎵 Buscando \""+cancion+"\" en "+appNombre+"..." : "🎵 Abriendo "+appNombre+"...", 3000, true);
  
-        // 3. Intentar abrir con URI scheme de Spotify
-        if (pkg.equals("com.spotify.music") && cancion != null) {
-            if (lanzarUri("spotify:search:"+Uri.encode(cancion))) return;
+        // 3. URI scheme del app (más directo que package launch)
+        if (pkg.equals("com.spotify.music")) {
+            String sUri = cancion != null
+                ? "spotify:search:" + Uri.encode(cancion)
+                : "spotify:";
+            if (lanzarUri(sUri)) return;
+        }
+        if (pkg.equals("com.google.android.apps.youtube.music") && cancion != null) {
+            if (lanzarUri("https://music.youtube.com/search?q=" + Uri.encode(cancion))) return;
         }
  
         // 4. Abrir app directo por paquete (necesita QUERY_ALL_PACKAGES en manifest)
@@ -724,10 +756,24 @@ public class DuckOverlayService extends Service implements SensorEventListener {
  
         showBubble(titulo!=null ? "🎬 Buscando \""+titulo+"\" en "+appNombre+"..." : "📺 Abriendo "+appNombre+"...", 3000, true);
  
-        // YouTube: URI scheme nativo
-        if (pkg.equals("com.google.android.youtube") && titulo != null) {
-            if (lanzarUri("vnd.youtube://results?search_query="+Uri.encode(titulo))) return;
-            if (lanzarUrl("https://www.youtube.com/results?search_query="+Uri.encode(titulo))) return;
+        // YouTube: URI scheme nativo para buscar
+        if (pkg.equals("com.google.android.youtube")) {
+            String q = titulo != null ? titulo : "";
+            if (!q.isEmpty()) {
+                if (lanzarUri("vnd.youtube://results?search_query=" + Uri.encode(q))) return;
+                if (lanzarUri("youtube://results?search_query=" + Uri.encode(q))) return;
+                if (lanzarUrl("https://www.youtube.com/results?search_query=" + Uri.encode(q))) return;
+            } else {
+                if (lanzarUri("vnd.youtube:")) return;
+            }
+        }
+        // Netflix search deep link
+        if (pkg.equals("com.netflix.mediaclient") && titulo != null) {
+            if (lanzarUri("nflx://www.netflix.com/search?q=" + Uri.encode(titulo))) return;
+        }
+        // Disney+ search
+        if (pkg.equals("com.disney.disneyplus") && titulo != null) {
+            if (lanzarUri("disneyplus://search?q=" + Uri.encode(titulo))) return;
         }
  
         // Resto: abrir por paquete (necesita QUERY_ALL_PACKAGES)
@@ -1043,7 +1089,9 @@ public class DuckOverlayService extends Service implements SensorEventListener {
     public void onDestroy(){
         super.onDestroy();
         wakeActivo=false;
-        destruirWakeRecognizer();
+        destruirWakeSR();
+        wakeRetryH.removeCallbacksAndMessages(null);
+        if(wakeView!=null)try{wm.removeView(wakeView);}catch(Exception ignored){}
         hambreHandler.removeCallbacks(hambreTick);
         if(quejaRunnable!=null)quejaHandler.removeCallbacks(quejaRunnable);
         if(sensorManager!=null)sensorManager.unregisterListener(this);
